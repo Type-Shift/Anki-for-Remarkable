@@ -7,7 +7,11 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 # ankiclient.cpp (the online AnkiWeb client) is kept in the tree for
 # reference but is no longer built: the app is offline-only now.
-qt_add_executable(anki main.cpp offlineclient.cpp offlineclient.h)
+qt_add_executable(anki
+    main.cpp
+    offlineclient.cpp offlineclient.h
+    wifimanager.cpp   wifimanager.h)
+
 qt_add_qml_module(anki
     URI anki_app
     VERSION 1.0

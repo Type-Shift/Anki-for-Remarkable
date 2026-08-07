@@ -14,6 +14,10 @@ Window {
     // Everything else comes from the C++ "anki" context property.
     property bool isAnswerRevealed: false
 
+    // Whether the Wi-Fi panel is open. Needed because running this app
+    // requires stopping xochitl, which removes reMarkable's own settings UI.
+    property bool wifiOpen: false
+
     // Fonts — scaled for reMarkable high-DPI (1872x2404)
     property string defaultFont: "sans-serif"
     property int headerFontSize: 48
@@ -625,24 +629,37 @@ Window {
                     }
                 }
 
+                // Wi-Fi status doubles as the button that opens the panel.
                 Rectangle {
                     width: 20
                     height: 20
                     radius: 10
-                    color: anki.currentState === "ERROR" ? "red" : (anki.currentState === "LOADING" ? "orange" : "green")
+                    color: wifi.connected ? "green"
+                                          : (wifi.status === "CONNECTING" ? "orange" : "red")
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
                 Text {
+                    id: wifiStatusText
                     text: {
-                        if (anki.currentState === "ERROR") return "Offline";
-                        if (anki.currentState === "LOADING") return "Syncing...";
-                        return "Connected";
+                        if (wifi.connected) return truncate(wifi.currentSsid, 18);
+                        if (wifi.status === "CONNECTING") return "Connecting...";
+                        return "Wi-Fi off";
                     }
                     font.family: defaultFont
                     font.pixelSize: smallFontSize
+                    font.underline: true
                     color: "black"
                     anchors.verticalCenter: parent.verticalCenter
+
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -30
+                        onClicked: {
+                            root.wifiOpen = true
+                            wifi.scan()
+                        }
+                    }
                 }
             }
         }
@@ -1130,6 +1147,453 @@ Window {
                     }
                 }
             }
+        }
+    }
+
+    // ==========================================
+    // Wi-Fi Overlay
+    // ==========================================
+    Item {
+        id: wifiOverlay
+        anchors.fill: parent
+        visible: root.wifiOpen
+        z: 200
+
+        property string selectedSsid: ""
+        property bool   selectedSecured: false
+        property bool   selectedSaved: false
+        property string passwordInput: ""
+        property bool   shifted: false
+        property bool   symbols: false
+
+        function selectNetwork(n) {
+            selectedSsid    = n.ssid
+            selectedSecured = n.secured
+            selectedSaved   = n.saved
+            passwordInput   = ""
+        }
+
+        function typeChar(ch) {
+            passwordInput += shifted ? ch.toUpperCase() : ch
+            if (shifted) shifted = false
+        }
+
+        function backspace() {
+            if (passwordInput.length > 0)
+                passwordInput = passwordInput.substring(0, passwordInput.length - 1)
+        }
+
+        function join() {
+            if (selectedSsid === "") return
+            // A saved network already has credentials stored; don't force
+            // the user to retype a password they've entered before.
+            if (selectedSaved && passwordInput === "")
+                wifi.connectToSaved(selectedSsid)
+            else
+                wifi.connectToNetwork(selectedSsid, passwordInput)
+            passwordInput = ""
+        }
+
+        Rectangle { anchors.fill: parent; color: "white" }
+
+        // ---- Header ----
+        Item {
+            id: wifiHeader
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 140
+
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 50
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Wi-Fi"
+                font.family: defaultFont
+                font.pixelSize: largeFontSize
+                font.bold: true
+                color: "black"
+            }
+
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 50
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Close ✕"
+                font.family: defaultFont
+                font.pixelSize: headerFontSize
+                color: "black"
+
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -30
+                    onClicked: root.wifiOpen = false
+                }
+            }
+        }
+
+        Rectangle {
+            id: wifiDivider
+            anchors.top: wifiHeader.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 3
+            color: "black"
+        }
+
+        // ---- Status + actions ----
+        Column {
+            id: wifiStatusBlock
+            anchors.top: wifiDivider.bottom
+            anchors.topMargin: 30
+            anchors.left: parent.left
+            anchors.leftMargin: 50
+            anchors.right: parent.right
+            anchors.rightMargin: 50
+            spacing: 16
+
+            Text {
+                text: wifi.connected
+                      ? ("Connected to " + wifi.currentSsid)
+                      : (wifi.status === "CONNECTING" ? "Connecting..." : "Not connected")
+                font.family: defaultFont
+                font.pixelSize: normalFontSize
+                font.bold: true
+                color: "black"
+            }
+
+            Text {
+                text: wifi.ipAddress === "" ? " " : ("IP " + wifi.ipAddress)
+                font.family: defaultFont
+                font.pixelSize: smallFontSize
+                color: "#555555"
+            }
+
+            Text {
+                text: wifi.wifiError
+                visible: wifi.wifiError !== ""
+                font.family: defaultFont
+                font.pixelSize: smallFontSize
+                color: "#D32F2F"
+                wrapMode: Text.WordWrap
+                width: parent.width
+            }
+
+            Row {
+                spacing: 24
+
+                Rectangle {
+                    width: 300; height: 90; radius: 20
+                    border.color: "black"; border.width: 4; color: "white"
+                    Text {
+                        anchors.centerIn: parent
+                        text: wifi.scanning ? "Scanning..." : "Scan"
+                        font.family: defaultFont
+                        font.pixelSize: smallFontSize
+                        color: "black"
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: wifi.scan() }
+                }
+
+                Rectangle {
+                    width: 340; height: 90; radius: 20
+                    border.color: "black"; border.width: 4; color: "white"
+                    Text {
+                        anchors.centerIn: parent
+                        text: wifi.connected ? "Turn off Wi-Fi" : "Turn on Wi-Fi"
+                        font.family: defaultFont
+                        font.pixelSize: smallFontSize
+                        color: "black"
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: wifi.connected ? wifi.disconnectWifi() : wifi.reconnectWifi()
+                    }
+                }
+
+                Rectangle {
+                    width: 300; height: 90; radius: 20
+                    visible: wifiOverlay.selectedSaved && wifiOverlay.selectedSsid !== ""
+                    border.color: "#D32F2F"; border.width: 4; color: "white"
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Forget"
+                        font.family: defaultFont
+                        font.pixelSize: smallFontSize
+                        color: "#D32F2F"
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: {
+                            wifi.forgetNetwork(wifiOverlay.selectedSsid)
+                            wifiOverlay.selectedSsid = ""
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Network list ----
+        Flickable {
+            id: netList
+            anchors.top: wifiStatusBlock.bottom
+            anchors.topMargin: 30
+            anchors.left: parent.left
+            anchors.leftMargin: 50
+            anchors.right: parent.right
+            anchors.rightMargin: 50
+            anchors.bottom: wifiKeyboard.top
+            anchors.bottomMargin: 20
+            contentHeight: netColumn.height
+            clip: true
+
+            Column {
+                id: netColumn
+                width: parent.width
+                spacing: 0
+
+                Text {
+                    text: wifi.networks.length === 0
+                          ? "No networks found yet - tap Scan."
+                          : ""
+                    visible: wifi.networks.length === 0
+                    font.family: defaultFont
+                    font.pixelSize: smallFontSize
+                    color: "#555555"
+                    topPadding: 20
+                }
+
+                Repeater {
+                    model: wifi.networks
+
+                    delegate: Rectangle {
+                        width: netColumn.width
+                        height: 120
+                        color: modelData.ssid === wifiOverlay.selectedSsid ? "#E8E8E8" : "white"
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 24
+
+                            Text {
+                                // Simple bar meter; e-paper renders blocks well.
+                                text: {
+                                    var b = modelData.bars
+                                    var s = ""
+                                    for (var i = 0; i < 4; i++) s += (i < b ? "█" : "░")
+                                    return s
+                                }
+                                font.family: "monospace"
+                                font.pixelSize: smallFontSize
+                                color: "black"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Text {
+                                text: modelData.ssid
+                                font.family: defaultFont
+                                font.pixelSize: normalFontSize
+                                font.bold: modelData.current
+                                color: "black"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Text {
+                                text: modelData.secured ? "(WPA)" : "(open)"
+                                font.family: defaultFont
+                                font.pixelSize: smallFontSize
+                                color: "#555555"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Text {
+                                text: modelData.current ? "connected"
+                                                        : (modelData.saved ? "saved" : "")
+                                font.family: defaultFont
+                                font.pixelSize: smallFontSize
+                                color: "#555555"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.bottom: parent.bottom
+                            width: parent.width
+                            height: 2
+                            color: "#CCCCCC"
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: wifiOverlay.selectNetwork(modelData)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Password entry + keyboard ----
+        Column {
+            id: wifiKeyboard
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 20
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 100
+            spacing: 14
+            // Only needed when joining a secured network we have no password for.
+            visible: wifiOverlay.selectedSsid !== "" &&
+                     wifiOverlay.selectedSecured &&
+                     !(wifiOverlay.selectedSaved && wifiOverlay.passwordInput === "")
+
+            Row {
+                spacing: 20
+                width: parent.width
+
+                Rectangle {
+                    width: parent.width - 340
+                    height: 100
+                    radius: 16
+                    border.color: "black"
+                    border.width: 4
+                    color: "white"
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 24
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: wifiOverlay.passwordInput.length > 0
+                              ? wifiOverlay.passwordInput
+                              : ("Password for " + wifiOverlay.selectedSsid)
+                        font.family: defaultFont
+                        font.pixelSize: smallFontSize
+                        color: wifiOverlay.passwordInput.length > 0 ? "black" : "#999999"
+                        elide: Text.ElideRight
+                        width: parent.width - 48
+                    }
+                }
+
+                Rectangle {
+                    width: 320; height: 100; radius: 16
+                    border.color: "black"; border.width: 4; color: "white"
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Connect"
+                        font.family: defaultFont
+                        font.pixelSize: smallFontSize
+                        font.bold: true
+                        color: "black"
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: wifiOverlay.join() }
+                }
+            }
+
+            Repeater {
+                model: wifiOverlay.symbols
+                       ? ["1234567890", "!@#$%^&*()", "-_=+[]{};:", "'\",.<>/?\\|"]
+                       : ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+
+                delegate: Row {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 10
+
+                    Repeater {
+                        model: modelData.split("")
+
+                        delegate: Rectangle {
+                            width: 150; height: 100; radius: 12
+                            border.color: "black"; border.width: 3; color: "white"
+                            Text {
+                                anchors.centerIn: parent
+                                text: wifiOverlay.shifted && !wifiOverlay.symbols
+                                      ? modelData.toUpperCase() : modelData
+                                font.family: defaultFont
+                                font.pixelSize: smallFontSize
+                                color: "black"
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: wifiOverlay.typeChar(modelData)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 10
+
+                Rectangle {
+                    width: 220; height: 100; radius: 12
+                    border.color: "black"; border.width: 3
+                    color: wifiOverlay.shifted ? "#DDDDDD" : "white"
+                    Text {
+                        anchors.centerIn: parent; text: "SHIFT"
+                        font.family: defaultFont; font.pixelSize: smallFontSize; color: "black"
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: wifiOverlay.shifted = !wifiOverlay.shifted
+                    }
+                }
+
+                Rectangle {
+                    width: 220; height: 100; radius: 12
+                    border.color: "black"; border.width: 3
+                    color: wifiOverlay.symbols ? "#DDDDDD" : "white"
+                    Text {
+                        anchors.centerIn: parent
+                        text: wifiOverlay.symbols ? "abc" : "?123"
+                        font.family: defaultFont; font.pixelSize: smallFontSize; color: "black"
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: wifiOverlay.symbols = !wifiOverlay.symbols
+                    }
+                }
+
+                Rectangle {
+                    width: 400; height: 100; radius: 12
+                    border.color: "black"; border.width: 3; color: "white"
+                    Text {
+                        anchors.centerIn: parent; text: "space"
+                        font.family: defaultFont; font.pixelSize: smallFontSize; color: "black"
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: wifiOverlay.typeChar(" ") }
+                }
+
+                Rectangle {
+                    width: 260; height: 100; radius: 12
+                    border.color: "black"; border.width: 3; color: "white"
+                    Text {
+                        anchors.centerIn: parent; text: "⌫"
+                        font.family: defaultFont; font.pixelSize: smallFontSize; color: "black"
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: wifiOverlay.backspace() }
+                }
+            }
+        }
+
+        // Join button for open or already-saved networks, where no keyboard
+        // is shown and there is nothing to type.
+        Rectangle {
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 40
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 460; height: 110; radius: 20
+            border.color: "black"; border.width: 4; color: "white"
+            visible: wifiOverlay.selectedSsid !== "" && !wifiKeyboard.visible
+
+            Text {
+                anchors.centerIn: parent
+                text: "Connect to " + truncate(wifiOverlay.selectedSsid, 14)
+                font.family: defaultFont
+                font.pixelSize: smallFontSize
+                font.bold: true
+                color: "black"
+            }
+            MouseArea { anchors.fill: parent; onClicked: wifiOverlay.join() }
         }
     }
 }
