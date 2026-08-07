@@ -16,14 +16,75 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Device     = '192.168.68.64',
+    [string]$Device     = '',          # blank = discover by MAC
     [string]$Collection = "$PSScriptRoot\..\test-collection.anki2",
-    [string]$Deck       = 'Offline Test',
+    [string]$Deck       = '',          # blank = every deck with cards due
     [int]   $Limit      = 100,
     [switch]$NoRestart
 )
 
 $ErrorActionPreference = 'Stop'
+
+# The tablet's WiFi MAC. Discovering by MAC rather than hardcoding an IP means
+# this keeps working when the address changes -- a different network, a DHCP
+# lease change, or the PC's own mobile hotspot (which uses 192.168.137.x).
+$DeviceMac = 'c0-84-7d-38-83-51'
+
+$CachePath = Join-Path $env:LOCALAPPDATA 'rmanki-offline\last-ip.txt'
+
+function Get-MacFromArp {
+    param([string]$Mac)
+    $entry = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+             Where-Object { $_.LinkLayerAddress -eq $Mac -and
+                            $_.State -notin @('Unreachable', 'Incomplete') } |
+             Select-Object -First 1
+    if ($entry) { return $entry.IPAddress }
+    return $null
+}
+
+function Invoke-SubnetSweep {
+    # Concurrent ping sweep to populate the ARP cache. Uses SendPingAsync
+    # rather than ForEach-Object -Parallel, which is PowerShell 7 only and
+    # this machine runs 5.1.
+    $locals = Get-NetIPAddress -AddressFamily IPv4 |
+              Where-Object { $_.IPAddress -notlike '127.*' -and
+                             $_.IPAddress -notlike '169.254.*' -and
+                             $_.PrefixLength -ge 24 }
+    foreach ($l in $locals) {
+        $prefix = ($l.IPAddress -split '\.')[0..2] -join '.'
+        $pings = @()
+        $pingers = @()
+        foreach ($i in 1..254) {
+            $p = New-Object System.Net.NetworkInformation.Ping
+            $pingers += $p
+            $pings   += $p.SendPingAsync("$prefix.$i", 700)
+        }
+        [void][System.Threading.Tasks.Task]::WaitAll($pings, 4000)
+        foreach ($p in $pingers) { $p.Dispose() }
+    }
+}
+
+function Find-Device {
+    param([string]$Mac)
+
+    # 1. Already in the ARP cache?
+    $ip = Get-MacFromArp $Mac
+    if ($ip) { return $ip }
+
+    # 2. Last known good address, if it still answers on SSH.
+    if (Test-Path $CachePath) {
+        $last = (Get-Content $CachePath -Raw).Trim()
+        if ($last -and (Test-NetConnection -ComputerName $last -Port 22 `
+                        -WarningAction SilentlyContinue).TcpTestSucceeded) {
+            return $last
+        }
+    }
+
+    # 3. Sweep the subnet to populate ARP, then look again.
+    Write-Host "    searching the network for the tablet..." -ForegroundColor DarkGray
+    Invoke-SubnetSweep
+    return Get-MacFromArp $Mac
+}
 
 $py      = "$env:LOCALAPPDATA\AnkiProgramFiles\.venv\Scripts\python.exe"
 $rmanki  = Join-Path $PSScriptRoot 'rmanki.py'
@@ -38,10 +99,22 @@ function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $py))         { Fail "Anki's bundled Python not found at $py" }
 if (-not (Test-Path $Collection)) { Fail "Collection not found: $Collection" }
 
-Write-Host "==> checking tablet" -ForegroundColor Cyan
-if (-not (Test-NetConnection -ComputerName $Device -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) {
-    Fail "Tablet unreachable at $Device. Wake it and make sure Wi-Fi is on."
+Write-Host "==> locating tablet" -ForegroundColor Cyan
+if (-not $Device) {
+    $Device = Find-Device $DeviceMac
+    if (-not $Device) {
+        Fail "Could not find the tablet on any connected network. Wake it, check Wi-Fi is on, or pass -Device <ip>."
+    }
 }
+Write-Host "    $Device"
+
+if (-not (Test-NetConnection -ComputerName $Device -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) {
+    Fail "Tablet found at $Device but SSH is not answering. Is it awake?"
+}
+
+# Remember it so the next run skips discovery entirely.
+New-Item -ItemType Directory -Force -Path (Split-Path $CachePath) | Out-Null
+Set-Content -Path $CachePath -Value $Device -Encoding ascii
 
 # --- 1. pull the queue ------------------------------------------------------
 
@@ -72,10 +145,14 @@ if ($hasQueue -eq 'YES') {
 # --- 3. export a fresh batch ------------------------------------------------
 
 Write-Host "==> exporting due cards" -ForegroundColor Cyan
-& $py $rmanki export --collection $Collection --deck $Deck --limit $Limit --out $batch
+$exportArgs = @('export', '--collection', $Collection, '--limit', $Limit, '--out', $batch)
+if ($Deck) { $exportArgs += @('--deck', $Deck) }   # omitted = every deck due
+& $py $rmanki @exportArgs
 if ($LASTEXITCODE -ne 0) { Fail "Export failed." }
 
-$cardCount = (Get-Content $batch -Raw | ConvertFrom-Json).cards.Count
+$parsed    = Get-Content $batch -Raw | ConvertFrom-Json
+$cardCount = $parsed.cards.Count
+foreach ($d in $parsed.decks) { Write-Host ("    {0,-40} {1}" -f $d.name, $d.count) }
 
 # --- 4. push it back --------------------------------------------------------
 
@@ -87,13 +164,13 @@ if ($LASTEXITCODE -ne 0) { Fail "Could not copy the batch to the tablet." }
 
 if (-not $NoRestart) {
     Write-Host "==> restarting app" -ForegroundColor Cyan
-    # The app reads the batch once at startup, so it needs a restart to see
-    # new cards. setsid detaches it from this SSH session's process group.
-    $launch = 'killall anki-offline 2>/dev/null; sleep 1; systemctl stop xochitl; sleep 1; ' +
-              'cd /home/root; QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS=rotate=180 ' +
-              'QT_QUICK_BACKEND=epaper setsid nohup /home/root/anki-offline -platform epaper ' +
-              '</dev/null > /home/root/anki-offline.log 2>&1 & sleep 8; ' +
-              'pidof anki-offline || echo DIED'
+    # Normally unnecessary: the app watches the batch file and picks up new
+    # cards live. Kept as a fallback, and it re-establishes the sleep
+    # inhibitor. setsid detaches it from this SSH session's process group,
+    # which plain nohup does not survive.
+    $launch = 'killall anki-offline 2>/dev/null; sleep 1; ' +
+              'setsid nohup /home/root/run-anki.sh </dev/null >/dev/null 2>&1 & ' +
+              'sleep 9; pidof anki-offline || echo DIED'
     $result = (& ssh @sshOpts "root@$Device" $launch) -join ' '
     if ($result -match 'DIED') { Fail "App failed to restart. See /home/root/anki-offline.log" }
 }

@@ -125,6 +125,7 @@ bool OfflineAnkiClient::loadBatch()
         // Card ids exceed 2^31, so they must be read as doubles and cast,
         // not toInt().
         c.cardId    = static_cast<qint64>(o.value(QStringLiteral("card_id")).toDouble());
+        c.deck      = o.value(QStringLiteral("deck")).toString(m_batchDeckName);
         c.question  = o.value(QStringLiteral("question")).toString();
         c.answer    = o.value(QStringLiteral("answer")).toString();
         c.statesB64 = o.value(QStringLiteral("states_b64")).toString();
@@ -202,21 +203,66 @@ int OfflineAnkiClient::pendingCount() const
     return n;
 }
 
+QStringList OfflineAnkiClient::deckNames() const
+{
+    QStringList names;
+    for (const OfflineCard &c : m_cards) {
+        if (m_answeredIds.contains(c.cardId)) continue;
+        if (!names.contains(c.deck)) names << c.deck;
+    }
+    names.sort();
+    return names;
+}
+
+int OfflineAnkiClient::pendingInDeck(const QString &deck) const
+{
+    int n = 0;
+    for (const OfflineCard &c : m_cards)
+        if (c.deck == deck && !m_answeredIds.contains(c.cardId)) ++n;
+    return n;
+}
+
 void OfflineAnkiClient::rebuildDeckData()
 {
     m_deckData.clear();
-    QVariantMap deck;
-    deck.insert(QStringLiteral("title"),       m_batchDeckName);
-    deck.insert(QStringLiteral("visible"),     true);
-    deck.insert(QStringLiteral("indent"),      0);
-    deck.insert(QStringLiteral("hasChildren"), false);
-    deck.insert(QStringLiteral("collapsed"),   m_deckCollapsed);
-    // The PC already applied deck limits when building the batch, so every
-    // pending card is simply "due" from the tablet's point of view.
-    deck.insert(QStringLiteral("newC"),  0);
-    deck.insert(QStringLiteral("learnC"), 0);
-    deck.insert(QStringLiteral("dueC"),  pendingCount());
-    m_deckData.append(deck);
+    m_visibleDecks.clear();
+
+    const QStringList names = deckNames();
+
+    // Anki deck names are "Parent::Child"; indent by depth and let a parent
+    // collapse its children, matching how the deck list behaves on desktop.
+    for (const QString &name : names) {
+        const QStringList parts = name.split(QStringLiteral("::"));
+        const int depth = parts.size() - 1;
+
+        bool hiddenByParent = false;
+        for (const QString &collapsed : m_collapsedDecks) {
+            if (name != collapsed && name.startsWith(collapsed + QStringLiteral("::"))) {
+                hiddenByParent = true;
+                break;
+            }
+        }
+        if (hiddenByParent) continue;
+
+        bool hasChildren = false;
+        for (const QString &other : names) {
+            if (other.startsWith(name + QStringLiteral("::"))) { hasChildren = true; break; }
+        }
+
+        QVariantMap deck;
+        deck.insert(QStringLiteral("title"),       parts.last());
+        deck.insert(QStringLiteral("visible"),     true);
+        deck.insert(QStringLiteral("indent"),      depth);
+        deck.insert(QStringLiteral("hasChildren"), hasChildren);
+        deck.insert(QStringLiteral("collapsed"),   m_collapsedDecks.contains(name));
+        // The PC applied deck limits when building the batch, so every
+        // pending card is simply "due" from the tablet's point of view.
+        deck.insert(QStringLiteral("newC"),   0);
+        deck.insert(QStringLiteral("learnC"), 0);
+        deck.insert(QStringLiteral("dueC"),   pendingInDeck(name));
+        m_deckData.append(deck);
+        m_visibleDecks << name;
+    }
     emit deckDataChanged();
 }
 
@@ -224,6 +270,9 @@ void OfflineAnkiClient::loadDecks()
 {
     setCurrentState(QStringLiteral("LOADING"));
     setStatusMessage(QStringLiteral("Reading cards..."));
+
+    // Returning to the deck list means no single deck is being studied.
+    m_activeDeck.clear();
 
     if (!loadBatch()) return;      // loadBatch() already set the error state
     loadExistingQueue();
@@ -259,8 +308,10 @@ void OfflineAnkiClient::loadDecks()
 
 void OfflineAnkiClient::toggleDeck(int index)
 {
-    Q_UNUSED(index)
-    m_deckCollapsed = !m_deckCollapsed;
+    if (index < 0 || index >= m_visibleDecks.size()) return;
+    const QString name = m_visibleDecks.at(index);
+    if (m_collapsedDecks.contains(name)) m_collapsedDecks.remove(name);
+    else                                 m_collapsedDecks.insert(name);
     rebuildDeckData();
 }
 
@@ -268,19 +319,35 @@ void OfflineAnkiClient::toggleDeck(int index)
 
 void OfflineAnkiClient::startStudy(int index)
 {
-    Q_UNUSED(index)
+    if (index < 0 || index >= m_visibleDecks.size()) return;
 
-    m_currentDeckName = m_batchDeckName;
+    // Tapping a parent deck studies it and everything beneath it, as on desktop.
+    m_activeDeck = m_visibleDecks.at(index);
+
+    m_currentDeckName = m_activeDeck.split(QStringLiteral("::")).last();
     emit currentDeckNameChanged();
+
+    m_currentTotal = pendingInDeck(m_activeDeck);
+    emit currentTotalChanged();
 
     m_index = 0;
     showNextCard();
 }
 
+bool OfflineAnkiClient::inActiveDeck(const OfflineCard &c) const
+{
+    if (m_activeDeck.isEmpty()) return true;
+    return c.deck == m_activeDeck ||
+           c.deck.startsWith(m_activeDeck + QStringLiteral("::"));
+}
+
 void OfflineAnkiClient::showNextCard()
 {
-    // Skip anything already answered, so a restart resumes where we left off.
-    while (m_index < m_cards.size() && m_answeredIds.contains(m_cards[m_index].cardId))
+    // Skip anything already answered or outside the deck being studied, so a
+    // restart resumes where we left off and decks stay separate.
+    while (m_index < m_cards.size() &&
+           (m_answeredIds.contains(m_cards[m_index].cardId) ||
+            !inActiveDeck(m_cards[m_index])))
         ++m_index;
 
     if (m_index >= m_cards.size()) {
@@ -301,7 +368,8 @@ void OfflineAnkiClient::showNextCard()
     m_currentButtonLabels = c.buttons;
     emit currentButtonLabelsChanged();
 
-    m_currentRemaining = pendingCount();
+    m_currentRemaining = m_activeDeck.isEmpty() ? pendingCount()
+                                                : pendingInDeck(m_activeDeck);
     emit currentRemainingChanged();
 
     m_cardTimer.start();

@@ -24,6 +24,7 @@ class QTimer;
 
 struct OfflineCard {
     qint64      cardId = 0;
+    QString     deck;
     QString     question;
     QString     answer;
     QStringList buttons;
@@ -105,6 +106,9 @@ private:
 
     bool loadBatch();          // read the PC-written batch file
     bool loadExistingQueue();  // resume: skip cards already answered
+    QStringList deckNames() const;               // decks with cards still pending
+    int  pendingInDeck(const QString &deck) const;
+    bool inActiveDeck(const OfflineCard &c) const;
     bool persistQueue();       // atomic + fsync; a lost answer is the one
                                // failure mode this whole project exists to fix
     void showNextCard();
@@ -133,7 +137,9 @@ private:
     QString      m_statusMessage;
     QString      m_errorMessage;
 
-    bool m_deckCollapsed = false;
+    QSet<QString> m_collapsedDecks;
+    QStringList   m_visibleDecks;   // parallel to m_deckData, for startStudy()
+    QString m_activeDeck;           // deck currently being studied
     QString m_batchDeckName;
     QString m_batchInfo;
     qint64  m_batchExportedAt = 0;

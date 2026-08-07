@@ -94,41 +94,75 @@ def split_answer(question: str, answer: str) -> str:
 
 # --- export -----------------------------------------------------------------
 
+def _collect_from_deck(col, deck_id: str, deck_name: str, limit: int, seen: set) -> list:
+    """Pull queued cards for one deck. Returns card dicts tagged with the deck."""
+    col.decks.select(deck_id)
+    queued = col.sched.get_queued_cards(fetch_limit=limit)
+
+    out = []
+    for qc in queued.cards:
+        if qc.card.id in seen:
+            continue                      # a parent deck already yielded it
+        seen.add(qc.card.id)
+
+        card = col.get_card(qc.card.id)
+        q_text = strip_html(card.question())
+        a_text = split_answer(q_text, strip_html(card.answer()))
+        labels = [clean_label(l) for l in col.sched.describe_next_states(qc.states)]
+
+        out.append({
+            "card_id": qc.card.id,
+            "deck": deck_name,
+            "question": q_text,
+            "answer": a_text,
+            "buttons": labels,
+            # The scheduling states are opaque to the tablet; it hands them
+            # straight back so we can schedule accurately at apply time.
+            # Same passthrough model AnkiWeb's own reviewer uses.
+            "states_b64": base64.b64encode(qc.states.SerializeToString()).decode("ascii"),
+        })
+    return out
+
+
 def export_batch(col_path: str, deck: str | None, limit: int, out_path: str) -> dict:
-    """Read due cards into a portable batch file. Does not modify scheduling."""
+    """Read due cards into a portable batch file. Does not modify scheduling.
+
+    With --deck, exports that deck (and its subdecks). Without, walks every
+    deck that has cards due, so the tablet gets a real multi-deck list.
+    """
     col = Collection(col_path)
     try:
+        cards: list = []
+        seen: set = set()
+
         if deck:
             deck_id = col.decks.id_for_name(deck)
             if deck_id is None:
                 raise SystemExit(f"No such deck: {deck!r}")
-            col.decks.select(deck_id)
+            cards = _collect_from_deck(col, deck_id, deck, limit, seen)
+        else:
+            # Deepest decks first, so a subdeck's cards are attributed to it
+            # rather than being swallowed by its parent's selection.
+            entries = sorted(col.decks.all_names_and_ids(),
+                             key=lambda d: d.name.count("::"), reverse=True)
+            for entry in entries:
+                if len(cards) >= limit:
+                    break
+                got = _collect_from_deck(col, entry.id, entry.name,
+                                         limit - len(cards), seen)
+                cards.extend(got)
 
-        queued = col.sched.get_queued_cards(fetch_limit=limit)
-
-        cards = []
-        for qc in queued.cards:
-            card = col.get_card(qc.card.id)
-            q_text = strip_html(card.question())
-            a_text = split_answer(q_text, strip_html(card.answer()))
-            labels = [clean_label(l) for l in col.sched.describe_next_states(qc.states)]
-
-            cards.append({
-                "card_id": qc.card.id,
-                "question": q_text,
-                "answer": a_text,
-                "buttons": labels,
-                # The scheduling states are opaque to the tablet; it hands
-                # them straight back so we can schedule accurately at apply
-                # time. Same passthrough model AnkiWeb's own reviewer uses.
-                "states_b64": base64.b64encode(qc.states.SerializeToString()).decode("ascii"),
-            })
+        # Per-deck totals so the tablet can show a real deck list.
+        per_deck: dict = {}
+        for c in cards:
+            per_deck[c["deck"]] = per_deck.get(c["deck"], 0) + 1
 
         counts = col.sched.counts()
         batch = {
             "version": BATCH_VERSION,
             "exported_at": int(time.time()),
-            "deck": deck or "(whole collection)",
+            "deck": deck or "(all decks)",
+            "decks": [{"name": n, "count": c} for n, c in sorted(per_deck.items())],
             "counts": {"new": counts[0], "learning": counts[1], "review": counts[2]},
             "cards": cards,
         }

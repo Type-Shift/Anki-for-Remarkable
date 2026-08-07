@@ -40,6 +40,11 @@ Window {
         anchors.left: parent.left
         anchors.right: parent.right
         height: 140
+        // Above the view Items (default z 0), below the overlays (100/200).
+        // studyScreen fills the whole window and holds a full-screen
+        // tap-to-reveal MouseArea; being declared later it stacked above the
+        // header and swallowed every tap on the back arrow.
+        z: 50
 
         Row {
             anchors.left: parent.left
