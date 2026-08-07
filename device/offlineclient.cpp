@@ -42,9 +42,11 @@ OfflineAnkiClient::OfflineAnkiClient(QObject *parent)
     connect(m_watcher, &QFileSystemWatcher::directoryChanged,
             this, &OfflineAnkiClient::onBatchPathChanged);
 
-    setCurrentState(QStringLiteral("LOADING"));
-    setStatusMessage(QStringLiteral("Loading cards..."));
+    // Populate deck counts and batchInfo, then sit on the home screen. The
+    // launcher starts this app at boot, so the first thing the user sees must
+    // be a choice between Anki and the stock notes UI -- not a forced app.
     loadDecks();
+    setCurrentState(QStringLiteral("HOME"));
 }
 
 void OfflineAnkiClient::onBatchPathChanged()
@@ -304,6 +306,12 @@ void OfflineAnkiClient::loadDecks()
         return;
     }
     setCurrentState(QStringLiteral("DECKS"));
+}
+
+void OfflineAnkiClient::goHome()
+{
+    m_activeDeck.clear();
+    setCurrentState(QStringLiteral("HOME"));
 }
 
 void OfflineAnkiClient::toggleDeck(int index)

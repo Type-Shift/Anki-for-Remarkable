@@ -2,6 +2,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 
+#include "deviceactions.h"
 #include "offlineclient.h"
 #include "wifimanager.h"
 
@@ -17,9 +18,13 @@ int main(int argc, char *argv[])
     // app means stopping xochitl, which takes reMarkable's settings UI with it.
     WifiManager wifi;
 
+    // Lets the user hand the framebuffer back to xochitl without a PC.
+    DeviceActions device;
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("anki"), &client);
     engine.rootContext()->setContextProperty(QStringLiteral("wifi"), &wifi);
+    engine.rootContext()->setContextProperty(QStringLiteral("device"), &device);
 
     QObject::connect(
         &engine,

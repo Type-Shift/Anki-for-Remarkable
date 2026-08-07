@@ -1,0 +1,24 @@
+[Unit]
+Description=Anki launcher for reMarkable
+Documentation=https://github.com/Type-Shift/Anki-for-Remarkable
+
+# Deliberately started AFTER xochitl rather than instead of it. xochitl boots
+# normally and this then takes the framebuffer over. If this app is broken or
+# missing, the tablet still comes up as a normal reMarkable -- a bad build can
+# never leave the device unusable.
+After=xochitl.service
+Requires=xochitl.service
+
+[Service]
+Type=simple
+ExecStart=/home/root/run-anki.sh
+
+# Leaving Anki (or crashing) hands the screen straight back to the notes UI,
+# so the tablet is never left showing nothing.
+ExecStopPost=-/bin/systemctl start xochitl
+
+# Do not fight a persistent crash loop; fall back to the stock UI instead.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

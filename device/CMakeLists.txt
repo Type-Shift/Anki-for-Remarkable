@@ -9,8 +9,9 @@ qt_standard_project_setup(REQUIRES 6.5)
 # reference but is no longer built: the app is offline-only now.
 qt_add_executable(anki
     main.cpp
-    offlineclient.cpp offlineclient.h
-    wifimanager.cpp   wifimanager.h)
+    offlineclient.cpp  offlineclient.h
+    wifimanager.cpp    wifimanager.h
+    deviceactions.cpp  deviceactions.h)
 
 qt_add_qml_module(anki
     URI anki_app

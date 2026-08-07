@@ -78,6 +78,8 @@ public:
     // Re-read the batch from disk. Safe to call from the finished screen so
     // the user is never stranded there after the PC pushes new cards.
     Q_INVOKABLE void checkForNewCards();
+    // Back to the launcher chooser.
+    Q_INVOKABLE void goHome();
 
 signals:
     void currentStateChanged();

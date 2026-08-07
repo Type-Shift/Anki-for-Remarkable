@@ -59,11 +59,16 @@ Window {
                 font.bold: true
                 color: "black"
                 visible: anki.currentState === "STUDY" || anki.currentState === "DONE"
+                         || anki.currentState === "DECKS"
 
                 MouseArea {
                     anchors.fill: parent
                     anchors.margins: -30
-                    onClicked: anki.loadDecks()
+                    // From the deck list there is nothing above but the
+                    // launcher; from a card, step back to the deck list.
+                    onClicked: anki.currentState === "DECKS"
+                               ? anki.goHome()
+                               : anki.loadDecks()
                 }
             }
 
@@ -204,6 +209,118 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: anki.loadDecks()
+                    }
+                }
+            }
+        }
+
+        // --- View: Home (launcher chooser) ---
+        Item {
+            anchors.fill: parent
+            visible: anki.currentState === "HOME"
+
+            Column {
+                anchors.centerIn: parent
+                spacing: 60
+                width: parent.width - 300
+
+                Text {
+                    text: "reMarkable"
+                    font.family: defaultFont
+                    font.pixelSize: largeFontSize
+                    font.bold: true
+                    color: "black"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+
+                Text {
+                    text: anki.errorMessage !== ""
+                          ? "No cards on the device yet"
+                          : (anki.currentRemaining + " card(s) ready to review")
+                    font.family: defaultFont
+                    font.pixelSize: normalFontSize
+                    color: "#444444"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+
+                Text {
+                    text: anki.batchInfo
+                    visible: anki.batchInfo !== ""
+                    font.family: defaultFont
+                    font.pixelSize: smallFontSize
+                    color: "#777777"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+
+                Item { width: 1; height: 20 }
+
+                Rectangle {
+                    width: parent.width
+                    height: 260
+                    radius: 28
+                    border.color: "black"
+                    border.width: 5
+                    color: "white"
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 12
+                        Text {
+                            text: "Study Anki"
+                            font.family: defaultFont
+                            font.pixelSize: largeFontSize
+                            font.bold: true
+                            color: "black"
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+                        Text {
+                            text: anki.pendingAnswers > 0
+                                  ? (anki.pendingAnswers + " answer(s) waiting to sync")
+                                  : "Review your flashcards offline"
+                            font.family: defaultFont
+                            font.pixelSize: smallFontSize
+                            color: "#555555"
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: anki.loadDecks()
+                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 260
+                    radius: 28
+                    border.color: "black"
+                    border.width: 5
+                    color: "white"
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 12
+                        Text {
+                            text: "reMarkable Notes"
+                            font.family: defaultFont
+                            font.pixelSize: largeFontSize
+                            font.bold: true
+                            color: "black"
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+                        Text {
+                            text: "Leave Anki. Reboot to come back."
+                            font.family: defaultFont
+                            font.pixelSize: smallFontSize
+                            color: "#555555"
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: device.exitToNotes()
                     }
                 }
             }
@@ -699,6 +816,30 @@ Window {
                 anchors.rightMargin: 50
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 30
+
+                Text {
+                    text: "Home"
+                    font.family: defaultFont
+                    font.pixelSize: smallFontSize
+                    font.underline: true
+                    color: "black"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: anki.currentState !== "HOME"
+
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -30
+                        onClicked: anki.goHome()
+                    }
+                }
+
+                Text {
+                    text: device.charging ? (device.batteryLevel + " +") : device.batteryLevel
+                    font.family: defaultFont
+                    font.pixelSize: smallFontSize
+                    color: "black"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
                 Text {
                     id: clockText
