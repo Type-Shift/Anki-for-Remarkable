@@ -2,13 +2,15 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 
-#include "ankiclient.h"
+#include "offlineclient.h"
 
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
 
-    AnkiClient client;
+    // Exposed as "anki" so Main.qml binds unchanged; OfflineAnkiClient
+    // presents the same properties and invokables the online client did.
+    OfflineAnkiClient client;
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("anki"), &client);

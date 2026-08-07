@@ -28,7 +28,11 @@ if (-not (Test-Path $TokenPath)) {
 }
 
 # Decrypt in-process; never write the plaintext anywhere.
-$secure = Get-Content $TokenPath -Raw | ConvertTo-SecureString
+# Set-Content -Encoding utf8 on PowerShell 5.1 emits a UTF-8 BOM, which
+# ConvertTo-SecureString rejects with "Input string was not in a correct
+# format". Strip the BOM and any trailing newline before decrypting.
+$raw    = [System.IO.File]::ReadAllText($TokenPath).TrimStart([char]0xFEFF).Trim()
+$secure = $raw | ConvertTo-SecureString
 $token  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
              [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
 
