@@ -215,20 +215,36 @@ int OfflineAnkiClient::pendingCount() const
 
 QStringList OfflineAnkiClient::deckNames() const
 {
-    QStringList names;
+    QSet<QString> all;
     for (const OfflineCard &c : m_cards) {
         if (m_answeredIds.contains(c.cardId)) continue;
-        if (!names.contains(c.deck)) names << c.deck;
+
+        // Insert every ancestor, not just the card's own deck. Decks like
+        // "Eng" and "French" hold no cards themselves -- everything lives in
+        // subdecks -- so without this they never appeared as rows and there
+        // was nothing to tap to collapse them.
+        const QStringList parts = c.deck.split(QStringLiteral("::"));
+        QString path;
+        for (const QString &part : parts) {
+            path = path.isEmpty() ? part : path + QStringLiteral("::") + part;
+            all.insert(path);
+        }
     }
+
+    QStringList names = all.values();
     names.sort();
     return names;
 }
 
 int OfflineAnkiClient::pendingInDeck(const QString &deck) const
 {
+    // Counts subdecks too, so a parent row shows the total beneath it --
+    // matching what tapping that row will actually study.
     int n = 0;
-    for (const OfflineCard &c : m_cards)
-        if (c.deck == deck && !m_answeredIds.contains(c.cardId)) ++n;
+    for (const OfflineCard &c : m_cards) {
+        if (m_answeredIds.contains(c.cardId)) continue;
+        if (c.deck == deck || c.deck.startsWith(deck + QStringLiteral("::"))) ++n;
+    }
     return n;
 }
 
@@ -294,6 +310,22 @@ void OfflineAnkiClient::loadDecks()
     if (!m_errorMessage.isEmpty()) {
         m_errorMessage.clear();
         emit errorMessageChanged();
+    }
+
+    // Start with every parent collapsed, so 57 decks open as a short list of
+    // subjects rather than a wall of subdecks. Done once, so the user's own
+    // expand/collapse choices survive a batch reload.
+    if (!m_collapseInitialised) {
+        m_collapseInitialised = true;
+        const QStringList names = deckNames();
+        for (const QString &name : names) {
+            for (const QString &other : names) {
+                if (other.startsWith(name + QStringLiteral("::"))) {
+                    m_collapsedDecks.insert(name);
+                    break;
+                }
+            }
+        }
     }
 
     m_cardsReviewed = m_answeredIds.size();

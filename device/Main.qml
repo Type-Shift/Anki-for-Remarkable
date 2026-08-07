@@ -524,6 +524,14 @@ Window {
                 contentHeight: deckColumn.height
                 clip: true
 
+                // E-ink cannot repaint fast enough for kinetic scrolling:
+                // momentum and rubber-band overshoot smear badly. Content
+                // tracks the finger and stops dead when it lifts.
+                maximumFlickVelocity: 0
+                flickDeceleration: 100000
+                boundsBehavior: Flickable.StopAtBounds
+                pixelAligned: true
+
                 Column {
                     id: deckColumn
                     width: parent.width
@@ -1577,6 +1585,12 @@ Window {
             anchors.bottomMargin: 20
             contentHeight: netColumn.height
             clip: true
+
+            // Same reasoning as the deck list: no kinetic scrolling on e-ink.
+            maximumFlickVelocity: 0
+            flickDeceleration: 100000
+            boundsBehavior: Flickable.StopAtBounds
+            pixelAligned: true
 
             Column {
                 id: netColumn

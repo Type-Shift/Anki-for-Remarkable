@@ -140,6 +140,7 @@ private:
     QString      m_errorMessage;
 
     QSet<QString> m_collapsedDecks;
+    bool m_collapseInitialised = false;   // parents start collapsed, once
     QStringList   m_visibleDecks;   // parallel to m_deckData, for startStudy()
     QString m_activeDeck;           // deck currently being studied
     QString m_batchDeckName;
