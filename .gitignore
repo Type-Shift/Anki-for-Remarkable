@@ -1,0 +1,8 @@
+build/
+sdk/
+*.anki2
+*.anki2-*
+batch.json
+queue.json
+__pycache__/
+*.pyc

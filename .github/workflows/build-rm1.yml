@@ -1,0 +1,76 @@
+name: Build reMarkable 1 binary
+
+# Builds the tablet app for the reMarkable 1 using reMarkable's official
+# Codex toolchain. Runs in the cloud because the dev machine is a locked-down
+# school PC with no Linux environment available.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      # Device is on firmware 3.27.3.0; 3.27.0.97 is the closest published
+      # SDK and is what the working upstream anki_rm1_3.27.0 binary was
+      # built against.
+      TOOLCHAIN_URL: https://storage.googleapis.com/remarkable-codex-toolchain/3.27.0.97/rm1/remarkable-production-image-5.7.119-rm1-public-x86_64-toolchain.sh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake wget xz-utils file
+
+      - name: Cache toolchain
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: sdk
+          key: rm1-sdk-3.27.0.97
+
+      - name: Download and install reMarkable 1 toolchain
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          wget -q --show-progress "$TOOLCHAIN_URL" -O toolchain.sh
+          chmod +x toolchain.sh
+          ./toolchain.sh -y -d sdk
+
+      - name: Show toolchain environment
+        run: |
+          echo "--- environment-setup scripts found ---"
+          ls sdk/environment-setup-* || (echo "no environment-setup script"; exit 1)
+
+      - name: Configure and build
+        run: |
+          # The exact triple differs between SDK releases, so glob it rather
+          # than hardcoding cortexa7hf/cortexa9hf and breaking on an update.
+          ENV_SETUP="$(ls sdk/environment-setup-* | head -n1)"
+          echo "sourcing ${ENV_SETUP}"
+          set +u
+          source "${ENV_SETUP}"
+          set -u
+          cmake -S device -B build
+          cmake --build build -j"$(nproc)"
+
+      - name: Verify the binary targets ARM
+        run: |
+          BIN=build/anki
+          test -f "$BIN" || (echo "build/anki not produced"; ls -R build; exit 1)
+          file "$BIN"
+          file "$BIN" | grep -q "ARM" || (echo "ERROR: not an ARM binary"; exit 1)
+          echo "size: $(stat -c%s "$BIN") bytes"
+
+      - name: Rename with device/firmware tag
+        run: mv build/anki "build/anki_rm1_3.27.0.97"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anki_rm1
+          path: build/anki_rm1_3.27.0.97
+          if-no-files-found: error
