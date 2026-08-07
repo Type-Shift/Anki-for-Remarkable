@@ -223,7 +223,7 @@ Window {
                 }
 
                 Text {
-                    text: "No more cards due in this deck."
+                    text: "You've finished every card sent to this device."
                     font.family: defaultFont
                     font.pixelSize: normalFontSize
                     color: "black"
@@ -231,7 +231,7 @@ Window {
                 }
 
                 Text {
-                    text: "Reviewed " + anki.cardsReviewed + " card(s) this session."
+                    text: "Reviewed " + anki.cardsReviewed + " card(s)."
                     font.family: defaultFont
                     font.pixelSize: normalFontSize
                     color: "black"
@@ -239,27 +239,109 @@ Window {
                     visible: anki.cardsReviewed > 0
                 }
 
+                // The crucial bit that was missing: say what to do next.
+                // Finishing a batch used to loop straight back to this screen
+                // with no explanation and no way forward.
                 Rectangle {
-                    width: 500
-                    height: 110
-                    radius: 24
+                    width: 1100
+                    height: 220
+                    radius: 20
+                    color: "#F2F2F2"
                     border.color: "black"
                     border.width: 3
-                    color: "white"
                     anchors.horizontalCenter: parent.horizontalCenter
 
-                    Text {
+                    Column {
                         anchors.centerIn: parent
-                        text: "Back to Decks"
-                        font.family: defaultFont
-                        font.pixelSize: normalFontSize
-                        color: "black"
-                        font.bold: true
+                        width: parent.width - 80
+                        spacing: 14
+
+                        Text {
+                            text: anki.pendingAnswers > 0
+                                  ? (anki.pendingAnswers + " answer(s) saved, waiting for your PC")
+                                  : "All answers have been collected by your PC"
+                            font.family: defaultFont
+                            font.pixelSize: smallFontSize
+                            font.bold: true
+                            color: "black"
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+
+                        Text {
+                            text: "To get more cards, connect to Wi-Fi and run sync.ps1 on your PC. New cards appear here automatically."
+                            font.family: defaultFont
+                            font.pixelSize: smallFontSize
+                            color: "#444444"
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+
+                        Text {
+                            text: anki.batchInfo
+                            font.family: defaultFont
+                            font.pixelSize: smallFontSize
+                            color: "#777777"
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                    }
+                }
+
+                Row {
+                    spacing: 40
+                    anchors.horizontalCenter: parent.horizontalCenter
+
+                    Rectangle {
+                        width: 520
+                        height: 110
+                        radius: 24
+                        border.color: "black"
+                        border.width: 3
+                        color: "white"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Check for new cards"
+                            font.family: defaultFont
+                            font.pixelSize: normalFontSize
+                            color: "black"
+                            font.bold: true
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: anki.checkForNewCards()
+                        }
                     }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: anki.loadDecks()
+                    Rectangle {
+                        width: 300
+                        height: 110
+                        radius: 24
+                        border.color: "black"
+                        border.width: 3
+                        color: "white"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Wi-Fi"
+                            font.family: defaultFont
+                            font.pixelSize: normalFontSize
+                            color: "black"
+                            font.bold: true
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                root.wifiOpen = true
+                                wifi.scan()
+                            }
+                        }
                     }
                 }
             }

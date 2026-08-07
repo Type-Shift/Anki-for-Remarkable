@@ -4,10 +4,12 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QTimer>
 #include <QVariantMap>
 
 namespace {
@@ -23,8 +25,41 @@ OfflineAnkiClient::OfflineAnkiClient(QObject *parent)
     m_batchPath = home + QLatin1Char('/') + QLatin1String(BATCH_FILE);
     m_queuePath = home + QLatin1Char('/') + QLatin1String(QUEUE_FILE);
 
+    // Watch for the PC pushing a new batch. The directory is watched as well
+    // as the file: scp replaces the file, which can drop a file-only watch.
+    m_watcher = new QFileSystemWatcher(this);
+    m_watcher->addPath(home);
+    if (QFile::exists(m_batchPath))
+        m_watcher->addPath(m_batchPath);
+
+    m_reloadDebounce = new QTimer(this);
+    m_reloadDebounce->setSingleShot(true);
+    m_reloadDebounce->setInterval(1200);      // let the copy finish landing
+    connect(m_reloadDebounce, &QTimer::timeout, this, &OfflineAnkiClient::checkForNewCards);
+
+    connect(m_watcher, &QFileSystemWatcher::fileChanged,
+            this, &OfflineAnkiClient::onBatchPathChanged);
+    connect(m_watcher, &QFileSystemWatcher::directoryChanged,
+            this, &OfflineAnkiClient::onBatchPathChanged);
+
     setCurrentState(QStringLiteral("LOADING"));
     setStatusMessage(QStringLiteral("Loading cards..."));
+    loadDecks();
+}
+
+void OfflineAnkiClient::onBatchPathChanged()
+{
+    // Never yank the card out from under someone mid-review.
+    if (m_currentState == QLatin1String("STUDY")) return;
+    m_reloadDebounce->start();
+}
+
+void OfflineAnkiClient::checkForNewCards()
+{
+    // A replaced file loses its watch entry; re-add it.
+    if (QFile::exists(m_batchPath) && !m_watcher->files().contains(m_batchPath))
+        m_watcher->addPath(m_batchPath);
+
     loadDecks();
 }
 
@@ -80,6 +115,7 @@ bool OfflineAnkiClient::loadBatch()
 
     const QJsonObject root = doc.object();
     m_batchDeckName = root.value(QStringLiteral("deck")).toString(QStringLiteral("Offline"));
+    m_batchExportedAt = static_cast<qint64>(root.value(QStringLiteral("exported_at")).toDouble());
 
     m_cards.clear();
     const QJsonArray arr = root.value(QStringLiteral("cards")).toArray();
@@ -201,6 +237,17 @@ void OfflineAnkiClient::loadDecks()
     m_currentRemaining = pendingCount();
     emit currentRemainingChanged();
 
+    emit pendingAnswersChanged();
+
+    QString when = QStringLiteral("unknown time");
+    if (m_batchExportedAt > 0) {
+        when = QDateTime::fromSecsSinceEpoch(m_batchExportedAt)
+                   .toString(QStringLiteral("d MMM, HH:mm"));
+    }
+    m_batchInfo = QStringLiteral("%1 card(s) sent from your PC on %2")
+                      .arg(m_cards.size()).arg(when);
+    emit batchInfoChanged();
+
     rebuildDeckData();
 
     if (m_currentRemaining == 0) {
@@ -294,6 +341,7 @@ void OfflineAnkiClient::answerCard(int button)
 
     m_cardsReviewed = m_answeredIds.size();
     emit cardsReviewedChanged();
+    emit pendingAnswersChanged();
 
     ++m_index;
     showNextCard();

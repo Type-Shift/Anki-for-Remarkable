@@ -9,6 +9,9 @@
 #include <QSet>
 #include <QElapsedTimer>
 
+class QFileSystemWatcher;
+class QTimer;
+
 // ---------------------------------------------------------------------------
 // OfflineAnkiClient
 //
@@ -42,6 +45,10 @@ class OfflineAnkiClient : public QObject
     Q_PROPERTY(int cardsReviewed       READ cardsReviewed   NOTIFY cardsReviewedChanged)
     Q_PROPERTY(QString statusMessage   READ statusMessage   NOTIFY statusMessageChanged)
     Q_PROPERTY(QString errorMessage    READ errorMessage    NOTIFY errorMessageChanged)
+    // Answers reviewed offline that the PC has not collected yet.
+    Q_PROPERTY(int pendingAnswers      READ pendingAnswers  NOTIFY pendingAnswersChanged)
+    // Human-readable description of the batch currently on the device.
+    Q_PROPERTY(QString batchInfo       READ batchInfo       NOTIFY batchInfoChanged)
 
 public:
     explicit OfflineAnkiClient(QObject *parent = nullptr);
@@ -57,6 +64,8 @@ public:
     int cardsReviewed() const { return m_cardsReviewed; }
     QString statusMessage() const { return m_statusMessage; }
     QString errorMessage() const { return m_errorMessage; }
+    int pendingAnswers() const { return m_queuedAnswers.size(); }
+    QString batchInfo() const { return m_batchInfo; }
 
     // Same invokables Main.qml calls. login() is retained only so the QML
     // binding resolves; there is nothing to log into offline.
@@ -65,6 +74,9 @@ public:
     Q_INVOKABLE void startStudy(int index);
     Q_INVOKABLE void answerCard(int button);
     Q_INVOKABLE void toggleDeck(int index);
+    // Re-read the batch from disk. Safe to call from the finished screen so
+    // the user is never stranded there after the PC pushes new cards.
+    Q_INVOKABLE void checkForNewCards();
 
 signals:
     void currentStateChanged();
@@ -78,6 +90,13 @@ signals:
     void cardsReviewedChanged();
     void statusMessageChanged();
     void errorMessageChanged();
+    void pendingAnswersChanged();
+    void batchInfoChanged();
+
+private slots:
+    // Fires when the PC pushes a new batch file, so new cards appear without
+    // needing the app restarted.
+    void onBatchPathChanged();
 
 private:
     void setCurrentState(const QString &s);
@@ -116,6 +135,11 @@ private:
 
     bool m_deckCollapsed = false;
     QString m_batchDeckName;
+    QString m_batchInfo;
+    qint64  m_batchExportedAt = 0;
+
+    QFileSystemWatcher *m_watcher = nullptr;
+    QTimer *m_reloadDebounce = nullptr;
 };
 
 #endif // OFFLINECLIENT_H
