@@ -1,0 +1,3 @@
+# Force LF in the repo. CI runs on Linux, and CRLF in shell fragments or
+# sourced toolchain scripts fails in ways that are painful to diagnose.
+* text=auto eol=lf
