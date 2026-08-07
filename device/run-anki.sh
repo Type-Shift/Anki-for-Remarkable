@@ -27,6 +27,13 @@ sleep 1
 
 cd /home/root
 
+# systemd services inherit no HOME, so QDir::homePath() resolves to "/" and
+# the app looks for /anki-batch.json instead of /home/root/anki-batch.json --
+# reporting "no cards on the device yet" while the batch sits there unread.
+# Works over SSH (where HOME is set) but not under the launcher.
+HOME=/home/root
+export HOME
+
 # reMarkable 1 needs the touchscreen rotated; rM2 additionally inverts X.
 QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS="rotate=180"
 QT_QUICK_BACKEND=epaper

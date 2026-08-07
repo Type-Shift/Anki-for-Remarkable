@@ -39,19 +39,50 @@ function Get-Token {
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
 }
 
-function Find-Device {
+function Get-MacFromArp {
     $entry = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
              Where-Object { $_.LinkLayerAddress -eq $DeviceMac -and
                             $_.State -notin @('Unreachable','Incomplete') } |
              Select-Object -First 1
     if ($entry) { return $entry.IPAddress }
+    return $null
+}
+
+function Invoke-SubnetSweep {
+    # Populate the ARP cache. SendPingAsync, not ForEach-Object -Parallel,
+    # which is PowerShell 7 only; this machine runs 5.1.
+    $locals = Get-NetIPAddress -AddressFamily IPv4 |
+              Where-Object { $_.IPAddress -notlike '127.*' -and
+                             $_.IPAddress -notlike '169.254.*' -and
+                             $_.PrefixLength -ge 22 }
+    foreach ($l in $locals) {
+        $prefix = ($l.IPAddress -split '\.')[0..2] -join '.'
+        $tasks = @(); $pingers = @()
+        foreach ($i in 1..254) {
+            $p = New-Object System.Net.NetworkInformation.Ping
+            $pingers += $p
+            $tasks   += $p.SendPingAsync("$prefix.$i", 700)
+        }
+        [void][System.Threading.Tasks.Task]::WaitAll($tasks, 5000)
+        foreach ($p in $pingers) { $p.Dispose() }
+    }
+}
+
+function Find-Device {
+    # An ARP-only lookup was why this failed when the tablet was asleep:
+    # nothing in the cache, no cache file yet, and it gave up immediately.
+    $ip = Get-MacFromArp
+    if ($ip) { return $ip }
 
     if (Test-Path $CachePath) {
         $last = (Get-Content $CachePath -Raw).Trim()
         if ($last -and (Test-NetConnection -ComputerName $last -Port 22 `
                         -WarningAction SilentlyContinue).TcpTestSucceeded) { return $last }
     }
-    return $null
+
+    Write-Host "    searching the network for the tablet..." -ForegroundColor DarkGray
+    Invoke-SubnetSweep
+    return Get-MacFromArp
 }
 
 # --- locate ----------------------------------------------------------------

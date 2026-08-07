@@ -21,7 +21,15 @@ const char    *QUEUE_FILE    = "anki-queue.json";
 OfflineAnkiClient::OfflineAnkiClient(QObject *parent)
     : QObject(parent)
 {
-    const QString home = QDir::homePath();
+    // Do NOT use QDir::homePath(): systemd services inherit no HOME, so it
+    // resolves to "/" and the app hunts for /anki-batch.json while the batch
+    // sits unread in /home/root. Fine over SSH, broken under the launcher.
+    // On a reMarkable this is always root's home; the env var is an escape
+    // hatch for testing.
+    QString home = qEnvironmentVariable("RMANKI_HOME");
+    if (home.isEmpty())
+        home = QStringLiteral("/home/root");
+
     m_batchPath = home + QLatin1Char('/') + QLatin1String(BATCH_FILE);
     m_queuePath = home + QLatin1Char('/') + QLatin1String(QUEUE_FILE);
 
@@ -278,6 +286,15 @@ void OfflineAnkiClient::loadDecks()
 
     if (!loadBatch()) return;      // loadBatch() already set the error state
     loadExistingQueue();
+
+    // Clear any stale failure. Without this, one early error (say the batch
+    // had not arrived yet at boot) stuck forever: the reload succeeded and
+    // the state advanced, but the home screen kept reading errorMessage and
+    // insisting there were no cards.
+    if (!m_errorMessage.isEmpty()) {
+        m_errorMessage.clear();
+        emit errorMessageChanged();
+    }
 
     m_cardsReviewed = m_answeredIds.size();
     emit cardsReviewedChanged();

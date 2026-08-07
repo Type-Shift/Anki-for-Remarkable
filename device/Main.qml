@@ -234,9 +234,12 @@ Window {
                 }
 
                 Text {
-                    text: anki.errorMessage !== ""
+                    // Drive this off the actual card count, not errorMessage:
+                    // the count is the thing being described, and a stale
+                    // error must never make loaded cards look absent.
+                    text: anki.currentTotal === 0
                           ? "No cards on the device yet"
-                          : (anki.currentRemaining + " card(s) ready to review")
+                          : (anki.currentRemaining + " of " + anki.currentTotal + " card(s) to review")
                     font.family: defaultFont
                     font.pixelSize: normalFontSize
                     color: "#444444"
