@@ -18,7 +18,7 @@ Window {
     // requires stopping xochitl, which removes reMarkable's own settings UI.
     property bool wifiOpen: false
 
-    // Fonts — scaled for reMarkable high-DPI (1872x2404)
+    // Fonts â€” scaled for reMarkable high-DPI (1872x2404)
     property string defaultFont: "sans-serif"
     property int headerFontSize: 48
     property int largeFontSize: 72
@@ -214,77 +214,97 @@ Window {
             }
         }
 
-        // --- View: Home (launcher chooser) ---
+        // --- View: Home (launcher) ---
+        //
+        // Deliberately spare, in the reMarkable idiom: hairline rules instead
+        // of boxes, wide margins, letter-spaced small caps, and no filled
+        // shapes. E-ink flatters thin black-on-white line work and punishes
+        // large solid fills, which ghost on partial refresh.
         Item {
             anchors.fill: parent
             visible: anki.currentState === "HOME"
 
+            readonly property int sideMargin: 170
+
+            // --- Masthead -------------------------------------------------
             Column {
-                anchors.centerIn: parent
-                spacing: 60
-                width: parent.width - 300
+                id: masthead
+                anchors.top: parent.top
+                anchors.topMargin: 340
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: parent.sideMargin
+                anchors.rightMargin: parent.sideMargin
+                spacing: 24
 
                 Text {
-                    text: "reMarkable"
+                    text: "Anki"
                     font.family: defaultFont
-                    font.pixelSize: largeFontSize
-                    font.bold: true
+                    font.pixelSize: 150
+                    font.weight: Font.Light
                     color: "black"
-                    anchors.horizontalCenter: parent.horizontalCenter
                 }
 
                 Text {
-                    // Drive this off the actual card count, not errorMessage:
-                    // the count is the thing being described, and a stale
-                    // error must never make loaded cards look absent.
                     text: anki.currentTotal === 0
-                          ? "No cards on the device yet"
-                          : (anki.currentRemaining + " of " + anki.currentTotal + " card(s) to review")
+                          ? "Nothing loaded"
+                          : (anki.currentRemaining + " cards due")
                     font.family: defaultFont
-                    font.pixelSize: normalFontSize
-                    color: "#444444"
-                    anchors.horizontalCenter: parent.horizontalCenter
+                    font.pixelSize: 52
+                    font.weight: Font.Light
+                    color: "#555555"
                 }
+            }
 
-                Text {
-                    text: anki.batchInfo
-                    visible: anki.batchInfo !== ""
-                    font.family: defaultFont
-                    font.pixelSize: smallFontSize
-                    color: "#777777"
-                    anchors.horizontalCenter: parent.horizontalCenter
-                }
+            // --- Choices --------------------------------------------------
+            Column {
+                id: choices
+                anchors.top: masthead.bottom
+                anchors.topMargin: 200
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: parent.sideMargin
+                anchors.rightMargin: parent.sideMargin
+                spacing: 0
 
-                Item { width: 1; height: 20 }
+                Rectangle { width: parent.width; height: 2; color: "black" }
 
-                Rectangle {
+                // Study
+                Item {
                     width: parent.width
-                    height: 260
-                    radius: 28
-                    border.color: "black"
-                    border.width: 5
-                    color: "white"
+                    height: 200
 
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 12
-                        Text {
-                            text: "Study Anki"
-                            font.family: defaultFont
-                            font.pixelSize: largeFontSize
-                            font.bold: true
-                            color: "black"
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
-                        Text {
-                            text: anki.pendingAnswers > 0
-                                  ? (anki.pendingAnswers + " answer(s) waiting to sync")
-                                  : "Review your flashcards offline"
-                            font.family: defaultFont
-                            font.pixelSize: smallFontSize
-                            color: "#555555"
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "STUDY"
+                        font.family: defaultFont
+                        font.pixelSize: 56
+                        font.letterSpacing: 8
+                        color: "black"
+                    }
+
+                    Text {
+                        anchors.right: chevron1.left
+                        anchors.rightMargin: 40
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: anki.pendingAnswers > 0
+                              ? (anki.pendingAnswers + " to sync")
+                              : (anki.currentTotal === 0 ? "" : anki.currentRemaining)
+                        font.family: defaultFont
+                        font.pixelSize: 44
+                        font.weight: Font.Light
+                        color: "#777777"
+                    }
+
+                    Text {
+                        id: chevron1
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "â†’"
+                        font.family: defaultFont
+                        font.pixelSize: 56
+                        color: "black"
                     }
 
                     MouseArea {
@@ -293,38 +313,78 @@ Window {
                     }
                 }
 
-                Rectangle {
-                    width: parent.width
-                    height: 260
-                    radius: 28
-                    border.color: "black"
-                    border.width: 5
-                    color: "white"
+                Rectangle { width: parent.width; height: 1; color: "#BBBBBB" }
 
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 12
-                        Text {
-                            text: "reMarkable Notes"
-                            font.family: defaultFont
-                            font.pixelSize: largeFontSize
-                            font.bold: true
-                            color: "black"
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
-                        Text {
-                            text: "Leave Anki. Reboot to come back."
-                            font.family: defaultFont
-                            font.pixelSize: smallFontSize
-                            color: "#555555"
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
+                // Notes
+                Item {
+                    width: parent.width
+                    height: 200
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "NOTES"
+                        font.family: defaultFont
+                        font.pixelSize: 56
+                        font.letterSpacing: 8
+                        color: "black"
+                    }
+
+                    Text {
+                        anchors.right: chevron2.left
+                        anchors.rightMargin: 40
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "reMarkable"
+                        font.family: defaultFont
+                        font.pixelSize: 44
+                        font.weight: Font.Light
+                        color: "#777777"
+                    }
+
+                    Text {
+                        id: chevron2
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "â†’"
+                        font.family: defaultFont
+                        font.pixelSize: 56
+                        color: "black"
                     }
 
                     MouseArea {
                         anchors.fill: parent
                         onClicked: device.exitToNotes()
                     }
+                }
+
+                Rectangle { width: parent.width; height: 2; color: "black" }
+            }
+
+            // --- Colophon -------------------------------------------------
+            Column {
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 200
+                anchors.left: parent.left
+                anchors.leftMargin: parent.sideMargin
+                spacing: 10
+
+                Text {
+                    text: anki.batchInfo
+                    visible: anki.batchInfo !== ""
+                    font.family: defaultFont
+                    font.pixelSize: 36
+                    font.weight: Font.Light
+                    color: "#888888"
+                }
+
+                Text {
+                    text: anki.currentTotal === 0
+                          ? "Run sync.ps1 on your computer to load cards"
+                          : "New cards arrive automatically over Wi-Fi"
+                    font.family: defaultFont
+                    font.pixelSize: 36
+                    font.weight: Font.Light
+                    color: "#888888"
                 }
             }
         }
@@ -547,7 +607,7 @@ Window {
                             visible: modelData.visible
                             clip: true
 
-                            // Full-row tap → start studying this deck
+                            // Full-row tap â†’ start studying this deck
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: anki.startStudy(index)
@@ -1458,7 +1518,7 @@ Window {
                 anchors.right: parent.right
                 anchors.rightMargin: 50
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Close ✕"
+                text: "Close âœ•"
                 font.family: defaultFont
                 font.pixelSize: headerFontSize
                 color: "black"
@@ -1626,7 +1686,7 @@ Window {
                                 text: {
                                     var b = modelData.bars
                                     var s = ""
-                                    for (var i = 0; i < 4; i++) s += (i < b ? "█" : "░")
+                                    for (var i = 0; i < 4; i++) s += (i < b ? "â–ˆ" : "â–‘")
                                     return s
                                 }
                                 font.family: "monospace"
@@ -1812,7 +1872,7 @@ Window {
                     width: 260; height: 100; radius: 12
                     border.color: "black"; border.width: 3; color: "white"
                     Text {
-                        anchors.centerIn: parent; text: "⌫"
+                        anchors.centerIn: parent; text: "âŒ«"
                         font.family: defaultFont; font.pixelSize: smallFontSize; color: "black"
                     }
                     MouseArea { anchors.fill: parent; onClicked: wifiOverlay.backspace() }
