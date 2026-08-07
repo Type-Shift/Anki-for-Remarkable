@@ -32,6 +32,22 @@ from anki.scheduler.v3 import SchedulingStates
 
 BATCH_VERSION = 1
 
+# The tablet sends Anki's *UI* rating: 1=Again, 2=Hard, 3=Good, 4=Easy, which
+# is also what the revlog `ease` column stores. But the protobuf enum
+# CardAnswer.Rating is 0-indexed (AGAIN=0 ... EASY=3), so build_answer needs
+# the value shifted down by one.
+#
+# Getting this wrong does not raise for ratings 1-3 -- it silently records a
+# review one step easier than the user pressed. Only rating 4 fails loudly.
+UI_RATINGS = (1, 2, 3, 4)
+RATING_NAMES = {1: "Again", 2: "Hard", 3: "Good", 4: "Easy"}
+
+
+def ui_rating_to_proto(rating: int) -> int:
+    if rating not in UI_RATINGS:
+        raise ValueError(f"rating must be 1-4, got {rating}")
+    return rating - 1
+
 # --- text rendering ---------------------------------------------------------
 # The tablet has no HTML or image support, so cards are flattened to plain
 # text here rather than on-device.
@@ -140,8 +156,10 @@ def apply_queue(col_path: str, queue_path: str) -> dict:
         for entry in answers:
             cid = int(entry["card_id"])
             rating = int(entry["rating"])
-            if rating not in (1, 2, 3, 4):
-                skipped.append((cid, f"bad rating {rating}"))
+            try:
+                proto_rating = ui_rating_to_proto(rating)
+            except ValueError as exc:
+                skipped.append((cid, str(exc)))
                 continue
 
             try:
@@ -156,13 +174,26 @@ def apply_queue(col_path: str, queue_path: str) -> dict:
             # answer_card derives time-taken from the review timer, so it
             # must be started even though the real thinking happened offline.
             card.start_timer()
-            answer = col.sched.build_answer(card=card, states=states, rating=rating)
+            answer = col.sched.build_answer(card=card, states=states, rating=proto_rating)
 
             # Preserve how long the card actually took on the tablet, if sent.
             if entry.get("time_taken_ms"):
                 answer.milliseconds_taken = int(entry["time_taken_ms"])
 
-            col.sched.answer_card(answer)
+            try:
+                col.sched.answer_card(answer)
+            except Exception as exc:
+                # Anki rejects an answer whose captured current_state no longer
+                # matches the card -- because the queue was already applied, or
+                # the card was reviewed elsewhere since the batch was exported.
+                # Skip that one card rather than aborting every other answer.
+                msg = str(exc)
+                if "card was modified" in msg:
+                    skipped.append((cid, "already applied, or reviewed elsewhere since export"))
+                else:
+                    skipped.append((cid, f"{type(exc).__name__}: {msg.splitlines()[0]}"))
+                continue
+
             applied += 1
     finally:
         col.close()
@@ -208,13 +239,17 @@ def selftest() -> int:
         print("FAIL: HTML leaked into question text")
         return 1
 
-    # Simulate offline reviewing: answer everything "Good".
+    # Cycle through all four ratings. Answering everything "Good" was how an
+    # off-by-one between the UI scale (1-4) and the protobuf enum (0-3) went
+    # unnoticed: ratings 1-3 silently record one step easier, and only rating
+    # 4 raises. Every rating must be exercised, and the result asserted.
     answers = [
-        {"card_id": c["card_id"], "rating": 3,
+        {"card_id": c["card_id"], "rating": UI_RATINGS[i % 4],
          "answered_at": int(time.time()), "time_taken_ms": 4200,
          "states_b64": c["states_b64"]}
-        for c in batch["cards"]
+        for i, c in enumerate(batch["cards"])
     ]
+    expected_ease = {a["card_id"]: a["rating"] for a in answers}
     with open(queue_path, "w", encoding="utf-8") as fh:
         json.dump({"version": BATCH_VERSION, "answers": answers}, fh, indent=1)
     print(f"simulated {len(answers)} offline answers -> {queue_path}")
@@ -228,6 +263,7 @@ def selftest() -> int:
     col = Collection(col_path)
     revlog = col.db.scalar("select count() from revlog")
     reps = col.db.scalar("select count() from cards where reps > 0")
+    recorded = dict(col.db.all("select cid, ease from revlog"))
     after_counts = col.sched.counts()
     col.close()
 
@@ -241,7 +277,24 @@ def selftest() -> int:
         print(f"FAIL: expected {len(answers)} reviewed cards, got {reps}")
         return 1
 
-    print("\nPASS: offline review round-trip works end to end")
+    # The assertion that actually matters: the ease Anki stored must be the
+    # button the user pressed, not one step off.
+    mismatches = []
+    for cid, want in expected_ease.items():
+        got = recorded.get(cid)
+        label = f"{RATING_NAMES[want]}({want})"
+        if got != want:
+            mismatches.append(f"card {cid}: sent {label}, revlog recorded ease={got}")
+        else:
+            print(f"  card {cid}: {label} -> revlog ease={got}  ok")
+
+    if mismatches:
+        print("\nFAIL: rating mapping is wrong")
+        for m in mismatches:
+            print("  " + m)
+        return 1
+
+    print("\nPASS: offline review round-trip works end to end, all 4 ratings correct")
     return 0
 
 
