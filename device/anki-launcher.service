@@ -7,7 +7,10 @@ Documentation=https://github.com/Type-Shift/Anki-for-Remarkable
 # missing, the tablet still comes up as a normal reMarkable -- a bad build can
 # never leave the device unusable.
 After=xochitl.service
-Requires=xochitl.service
+# Ordering ONLY -- deliberately no Requires=/BindsTo=. run-anki.sh stops
+# xochitl to claim the framebuffer, and systemd treats a required unit
+# stopping as grounds to stop this one too: the launcher shut itself down
+# the instant it started, handed the screen back, and Anki never appeared.
 
 [Service]
 Type=simple

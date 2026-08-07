@@ -87,6 +87,34 @@ not rM1 — it needs swapping for the cortexa9hf toolchain above.)
 - Launch must use `setsid` — plain `nohup ... &` does not survive a scripted
   SSH disconnect (dropbear signals the process group).
 
+## Bugs worth remembering
+
+**Rating scale off by one.** Anki's `CardAnswer.Rating` protobuf enum is
+0-indexed (`AGAIN=0 … EASY=3`) while the UI and the revlog `ease` column are
+1-4. Passing the UI value straight through silently records every review one
+step easier; only `EASY` fails loudly. The selftest passed while wrong because
+it answered everything "Good" and only checked that revlog rows existed. It
+now cycles all four ratings and asserts the stored ease.
+
+**systemd `Requires=` on a unit you stop yourself.** `anki-launcher.service`
+had `Requires=xochitl.service`, but `run-anki.sh` stops xochitl to claim the
+framebuffer. systemd treats a required unit stopping as grounds to stop the
+dependent unit, so the launcher shut itself down the instant it started.
+Ordering (`After=`) only.
+
+**Stale scheduling states are rejected, correctly.** Replaying an already
+applied queue raises "card was modified". `apply` skips that card rather than
+aborting the batch, which also covers a card reviewed on desktop since export.
+
+**Header z-order.** `studyScreen` fills the window and holds a full-screen
+tap-to-reveal `MouseArea`; declared after the header it swallowed every tap on
+the back arrow. Header is now `z: 50`.
+
+**Quoting through PowerShell to SSH.** Embedded double quotes are stripped
+when PowerShell invokes native exes, so `sed -i "s/\r$//"` reached the device
+as `s/r$//` and deleted literal `r` characters (`epaper` → `epape`). Avoid
+escapes in remote commands; use `-F` files for git messages.
+
 ## Status
 
 - **PC half: built and tested.** `pc/rmanki.py` with `export` / `apply` /

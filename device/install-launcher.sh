@@ -51,10 +51,12 @@ case "$action" in
         ;;
 
     status)
+        # is-enabled/is-active print a value AND exit non-zero when not
+        # enabled/active, so a plain `|| echo` prints twice. Take first line.
         echo "unit file : $([ -f "$UNIT" ] && echo present || echo absent)"
-        echo "enabled   : $(systemctl is-enabled anki-launcher.service 2>/dev/null || echo no)"
-        echo "active    : $(systemctl is-active anki-launcher.service 2>/dev/null || echo no)"
-        echo "xochitl   : $(systemctl is-active xochitl 2>/dev/null || echo no)"
+        echo "enabled   : $(systemctl is-enabled anki-launcher.service 2>/dev/null | head -n1)"
+        echo "active    : $(systemctl is-active anki-launcher.service 2>/dev/null | head -n1)"
+        echo "xochitl   : $(systemctl is-active xochitl 2>/dev/null | head -n1)"
         echo "app       : $([ -x "$APP" ] && echo ok || echo MISSING)"
         ;;
 
