@@ -56,6 +56,9 @@ Window {
         anchors.left: parent.left
         anchors.right: parent.right
         height: 140
+        // The launcher carries its own status strip; the title bar and its
+        // rule are clutter there.
+        visible: anki.currentState !== "HOME"
         // Above the view Items (default z 0), below the overlays (100/200).
         // studyScreen fills the whole window and holds a full-screen
         // tap-to-reveal MouseArea; being declared later it stacked above the
@@ -265,38 +268,69 @@ Window {
                 anchors.rightMargin: homeView.sideMargin
                 height: 70
 
-                Row {
+                // Wi-Fi state as the familiar fan symbol, drawn rather than
+                // set in text: no font on the device carries a Wi-Fi glyph.
+                Canvas {
+                    id: wifiIcon
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 20
+                    width: 76
+                    height: 62
+                    antialiasing: true
 
-                    Rectangle {
-                        width: 18; height: 18; radius: 9
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: wifi.connected ? "black"
-                                              : (wifi.status === "CONNECTING" ? "#888888" : "white")
-                        border.color: "black"
-                        border.width: 2
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.strokeStyle = "black";
+                        ctx.fillStyle = "black";
+                        ctx.lineCap = "round";
+
+                        var cx = width / 2;
+                        var cy = height - 10;
+
+                        // Connected: all three arcs. Connecting: the inner one
+                        // only. Off: all three, faint, with a slash.
+                        var arcs = wifi.connected ? 3
+                                                  : (wifi.status === "CONNECTING" ? 1 : 3);
+                        ctx.globalAlpha = wifi.connected ? 1.0 : 0.35;
+                        ctx.lineWidth = 7;
+
+                        for (var i = 0; i < arcs; i++) {
+                            var r = 16 + i * 15;
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, r, Math.PI * 1.25, Math.PI * 1.75);
+                            ctx.stroke();
+                        }
+
+                        // The base dot stays solid whenever the radio is up.
+                        ctx.globalAlpha = (wifi.connected || wifi.status === "CONNECTING") ? 1.0 : 0.35;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        if (!wifi.connected && wifi.status !== "CONNECTING") {
+                            ctx.globalAlpha = 1.0;
+                            ctx.lineWidth = 6;
+                            ctx.beginPath();
+                            ctx.moveTo(10, 6);
+                            ctx.lineTo(width - 10, height - 6);
+                            ctx.stroke();
+                        }
                     }
 
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: wifi.connected ? truncate(wifi.currentSsid, 22)
-                                             : (wifi.status === "CONNECTING" ? "Connecting" : "Wi-Fi off")
-                        font.family: brandFont
-                        font.pixelSize: 40
-                        color: "black"
+                    // Canvas does not repaint on its own when bindings change.
+                    Connections {
+                        target: wifi
+                        function onStatusChanged() { wifiIcon.requestPaint() }
                     }
-                }
 
-                MouseArea {
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    width: parent.width / 2
-                    onClicked: {
-                        root.wifiOpen = true
-                        wifi.scan()
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -30      // comfortable tap target
+                        onClicked: {
+                            root.wifiOpen = true
+                            wifi.scan()
+                        }
                     }
                 }
 
@@ -878,7 +912,11 @@ Window {
         anchors.right: parent.right
         // Fixed height now: the rating buttons moved into the scrollable card
         // content, so the footer no longer grows and steals space from it.
-        height: anki.currentState === "HOME" ? 0 : 80
+        height: 80
+        // Zero height alone was not enough -- Item does not clip, so the
+        // status bar inside kept drawing and a sliver stayed visible on the
+        // launcher. Hide the whole thing instead.
+        visible: anki.currentState !== "HOME"
 
         Item {
             id: statusBar
