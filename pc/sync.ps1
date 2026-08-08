@@ -92,7 +92,11 @@ $workDir = Join-Path $PSScriptRoot '..'
 $queue   = Join-Path $workDir 'queue.json'
 $batch   = Join-Path $workDir 'batch.json'
 
-$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=15')
+# accept-new: the tablet's IP changes with its DHCP lease, and an unknown
+# address otherwise fails with "Host key verification failed" under BatchMode.
+# Still refuses a CHANGED key for a known host, so this is not blanket trust.
+$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=15',
+             '-o','StrictHostKeyChecking=accept-new')
 
 function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 

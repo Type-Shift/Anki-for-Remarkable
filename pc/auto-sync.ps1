@@ -57,7 +57,10 @@ function Invoke-OneSync {
         }
         if ($Deck) { $syncArgs['Deck'] = $Deck }
 
-        $output = & $sync @syncArgs 2>&1 | Out-String
+        # *>&1, not 2>&1: sync.ps1 reports through Write-Host, which goes to
+        # the information stream and is NOT captured by 2>&1 -- which is why
+        # a real failure once logged as "FAILED:" with nothing after it.
+        $output = & $sync @syncArgs *>&1 | Out-String
 
         if ($LASTEXITCODE -eq 0) {
             $applied = ($output -split "`n" | Where-Object { $_ -match 'answer\(s\) to apply|applied \d+' }) -join '; '
@@ -77,9 +80,28 @@ function Invoke-OneSync {
 }
 
 if ($Loop) {
-    Write-Log ("daemon started, checking every {0} min" -f $IntervalMinutes)
+    # Refuse to start a second copy. Two daemons means double-syncing, and
+    # one instance previously sat silent for a day while another ran.
+    $others = @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessId -ne $PID -and
+                               $_.CommandLine -like '*auto-sync.ps1*' -and
+                               $_.CommandLine -like '*-Loop*' })
+    if ($others.Count -gt 0) {
+        Write-Log ("exiting: another daemon is already running (pid {0})" -f $others[0].ProcessId)
+        exit 0
+    }
+
+    Write-Log ("daemon started (pid {0}), checking every {1} min" -f $PID, $IntervalMinutes)
+    $cycle = 0
     while ($true) {
-        Invoke-OneSync
+        $cycle++
+        try {
+            Invoke-OneSync
+        } catch {
+            # Never let one bad cycle kill the daemon; silence is worse than
+            # a logged error, since nothing then syncs and nobody is told.
+            Write-Log ("cycle {0} threw: {1}" -f $cycle, $_.Exception.Message)
+        }
         Start-Sleep -Seconds ($IntervalMinutes * 60)
     }
 } else {

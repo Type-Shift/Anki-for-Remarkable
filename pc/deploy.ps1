@@ -27,7 +27,11 @@ $TokenPath = "$env:LOCALAPPDATA\rmanki-offline\gh-token.txt"
 $CachePath = "$env:LOCALAPPDATA\rmanki-offline\last-ip.txt"
 $DeviceDir = Join-Path $PSScriptRoot '..\device'
 
-$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20')
+# accept-new: the tablet's IP changes with its DHCP lease, and an unknown
+# address otherwise fails with "Host key verification failed" under BatchMode.
+# Still refuses a CHANGED key for a known host, so this is not blanket trust.
+$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20',
+             '-o','StrictHostKeyChecking=accept-new')
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 
