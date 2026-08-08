@@ -5,14 +5,17 @@
       2. apply it to the collection
       3. export a fresh batch of due cards
       4. push the batch back and clear the drained queue
-      5. restart the app so it picks up the new batch
+      5. optionally restart the app
 
     The queue is only cleared after a successful apply, so a failure at any
     point leaves the tablet's reviews intact to retry.
 
     Usage:
-        .\sync.ps1                          # uses the test collection
-        .\sync.ps1 -Collection "C:\path\collection.anki2" -Deck "GCSE"
+        .\sync.ps1
+        .\sync.ps1 -Collection "$env:APPDATA\Anki2\User 1\collection.anki2"
+        .\sync.ps1 -Deck "GCSE::Physics"
+
+    Close Anki desktop first when using a real collection: it holds a lock.
 #>
 [CmdletBinding()]
 param(
@@ -25,66 +28,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# The tablet's WiFi MAC. Discovering by MAC rather than hardcoding an IP means
-# this keeps working when the address changes -- a different network, a DHCP
-# lease change, or the PC's own mobile hotspot (which uses 192.168.137.x).
-$DeviceMac = 'c0-84-7d-38-83-51'
-
-$CachePath = Join-Path $env:LOCALAPPDATA 'rmanki-offline\last-ip.txt'
-
-function Get-MacFromArp {
-    param([string]$Mac)
-    $entry = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-             Where-Object { $_.LinkLayerAddress -eq $Mac -and
-                            $_.State -notin @('Unreachable', 'Incomplete') } |
-             Select-Object -First 1
-    if ($entry) { return $entry.IPAddress }
-    return $null
-}
-
-function Invoke-SubnetSweep {
-    # Concurrent ping sweep to populate the ARP cache. Uses SendPingAsync
-    # rather than ForEach-Object -Parallel, which is PowerShell 7 only and
-    # this machine runs 5.1.
-    $locals = Get-NetIPAddress -AddressFamily IPv4 |
-              Where-Object { $_.IPAddress -notlike '127.*' -and
-                             $_.IPAddress -notlike '169.254.*' -and
-                             $_.PrefixLength -ge 24 }
-    foreach ($l in $locals) {
-        $prefix = ($l.IPAddress -split '\.')[0..2] -join '.'
-        $pings = @()
-        $pingers = @()
-        foreach ($i in 1..254) {
-            $p = New-Object System.Net.NetworkInformation.Ping
-            $pingers += $p
-            $pings   += $p.SendPingAsync("$prefix.$i", 700)
-        }
-        [void][System.Threading.Tasks.Task]::WaitAll($pings, 4000)
-        foreach ($p in $pingers) { $p.Dispose() }
-    }
-}
-
-function Find-Device {
-    param([string]$Mac)
-
-    # 1. Already in the ARP cache?
-    $ip = Get-MacFromArp $Mac
-    if ($ip) { return $ip }
-
-    # 2. Last known good address, if it still answers on SSH.
-    if (Test-Path $CachePath) {
-        $last = (Get-Content $CachePath -Raw).Trim()
-        if ($last -and (Test-NetConnection -ComputerName $last -Port 22 `
-                        -WarningAction SilentlyContinue).TcpTestSucceeded) {
-            return $last
-        }
-    }
-
-    # 3. Sweep the subnet to populate ARP, then look again.
-    Write-Host "    searching the network for the tablet..." -ForegroundColor DarkGray
-    Invoke-SubnetSweep
-    return Get-MacFromArp $Mac
-}
+# Device discovery lives in one place so sync and deploy cannot drift apart.
+# They already had, and the weaker copy failed to find a tablet that was
+# sitting on the network.
+. (Join-Path $PSScriptRoot 'lib-device.ps1')
 
 $py      = "$env:LOCALAPPDATA\AnkiProgramFiles\.venv\Scripts\python.exe"
 $rmanki  = Join-Path $PSScriptRoot 'rmanki.py'
@@ -103,9 +50,11 @@ function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $py))         { Fail "Anki's bundled Python not found at $py" }
 if (-not (Test-Path $Collection)) { Fail "Collection not found: $Collection" }
 
+# --- 0. locate the tablet ---------------------------------------------------
+
 Write-Host "==> locating tablet" -ForegroundColor Cyan
 if (-not $Device) {
-    $Device = Find-Device $DeviceMac
+    $Device = Find-RemarkableDevice
     if (-not $Device) {
         Fail "Could not find the tablet on any connected network. Wake it, check Wi-Fi is on, or pass -Device <ip>."
     }
@@ -115,10 +64,7 @@ Write-Host "    $Device"
 if (-not (Test-NetConnection -ComputerName $Device -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) {
     Fail "Tablet found at $Device but SSH is not answering. Is it awake?"
 }
-
-# Remember it so the next run skips discovery entirely.
-New-Item -ItemType Directory -Force -Path (Split-Path $CachePath) | Out-Null
-Set-Content -Path $CachePath -Value $Device -Encoding ascii
+Save-RmAddress $Device
 
 # --- 1. pull the queue ------------------------------------------------------
 

@@ -27,8 +27,8 @@ Window {
     // back to something arbitrary. Maison Neue is the stock UI face; the
     // Noto families ship with the device as reading fonts.
     property string brandFont: {
-        var prefs = ["Maison Neue", "MaisonNeue", "Noto Sans UI", "Noto Sans",
-                     "Roboto", "DejaVu Sans", "sans-serif"];
+        var prefs = ["EB Garamond", "Noto Serif", "Noto Sans UI",
+                     "Noto Sans", "sans-serif"];
         var available = Qt.fontFamilies();
         for (var i = 0; i < prefs.length; i++) {
             if (available.indexOf(prefs[i]) !== -1)
@@ -232,16 +232,14 @@ Window {
 
         // --- View: Home (launcher) ---
         //
-        // Deliberately spare, in the reMarkable idiom: hairline rules instead
-        // of boxes, wide margins, letter-spaced small caps, and no filled
-        // shapes. E-ink flatters thin black-on-white line work and punishes
-        // large solid fills, which ghost on partial refresh.
+        // Stripped to the essentials: status at the top, a clock, and two
+        // ways to go. Nothing else earns its place on a launcher.
         Item {
             id: homeView
             anchors.fill: parent
             visible: anki.currentState === "HOME"
 
-            readonly property int sideMargin: 170
+            readonly property int sideMargin: 150
 
             // Handing the screen to xochitl quits Anki and needs a reboot to
             // undo, so it takes two taps. A single stray touch on e-ink must
@@ -256,31 +254,96 @@ Window {
                 onTriggered: homeView.confirmExit = false
             }
 
-            // --- Masthead -------------------------------------------------
-            Column {
-                id: masthead
+            // --- Status strip ---------------------------------------------
+            Item {
+                id: homeStatus
                 anchors.top: parent.top
-                anchors.topMargin: 340
+                anchors.topMargin: 60
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.leftMargin: parent.sideMargin
-                anchors.rightMargin: parent.sideMargin
-                spacing: 24
+                anchors.leftMargin: homeView.sideMargin
+                anchors.rightMargin: homeView.sideMargin
+                height: 70
 
-                Text {
-                    text: "Anki"
-                    font.family: brandFont
-                    font.pixelSize: 150
-                    font.weight: Font.Light
-                    color: "black"
+                Row {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 20
+
+                    Rectangle {
+                        width: 18; height: 18; radius: 9
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: wifi.connected ? "black"
+                                              : (wifi.status === "CONNECTING" ? "#888888" : "white")
+                        border.color: "black"
+                        border.width: 2
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: wifi.connected ? truncate(wifi.currentSsid, 22)
+                                             : (wifi.status === "CONNECTING" ? "Connecting" : "Wi-Fi off")
+                        font.family: brandFont
+                        font.pixelSize: 40
+                        color: "black"
+                    }
+                }
+
+                MouseArea {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: parent.width / 2
+                    onClicked: {
+                        root.wifiOpen = true
+                        wifi.scan()
+                    }
                 }
 
                 Text {
-                    text: anki.currentTotal === 0
-                          ? "Nothing loaded"
-                          : (anki.currentRemaining + " cards due")
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: device.charging ? (device.batteryLevel + " charging")
+                                          : device.batteryLevel
                     font.family: brandFont
-                    font.pixelSize: 52
+                    font.pixelSize: 40
+                    color: "black"
+                }
+            }
+
+            // --- Clock ----------------------------------------------------
+            Column {
+                id: homeClock
+                anchors.centerIn: parent
+                anchors.verticalCenterOffset: -220
+                spacing: 10
+
+                Text {
+                    id: homeClockText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    font.family: brandFont
+                    font.pixelSize: 240
+                    font.weight: Font.Light
+                    color: "black"
+
+                    Timer {
+                        interval: 10000
+                        running: true
+                        repeat: true
+                        triggeredOnStart: true
+                        onTriggered: {
+                            var d = new Date()
+                            homeClockText.text = Qt.formatTime(d, "HH:mm")
+                            homeDateText.text  = Qt.formatDate(d, "dddd d MMMM")
+                        }
+                    }
+                }
+
+                Text {
+                    id: homeDateText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    font.family: brandFont
+                    font.pixelSize: 48
                     font.weight: Font.Light
                     color: "#555555"
                 }
@@ -288,42 +351,26 @@ Window {
 
             // --- Choices --------------------------------------------------
             Column {
-                id: choices
-                anchors.top: masthead.bottom
-                anchors.topMargin: 200
+                anchors.top: homeClock.bottom
+                anchors.topMargin: 220
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.leftMargin: parent.sideMargin
-                anchors.rightMargin: parent.sideMargin
+                anchors.leftMargin: homeView.sideMargin
+                anchors.rightMargin: homeView.sideMargin
                 spacing: 0
 
                 Rectangle { width: parent.width; height: 2; color: "black" }
 
-                // Study
                 Item {
                     width: parent.width
-                    height: 200
+                    height: 220
 
                     Text {
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "STUDY"
+                        anchors.centerIn: parent
+                        text: "Anki"
                         font.family: brandFont
-                        font.pixelSize: 56
-                        font.letterSpacing: 8
+                        font.pixelSize: 84
                         color: "black"
-                    }
-
-                    Text {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: anki.pendingAnswers > 0
-                              ? (anki.pendingAnswers + " to sync")
-                              : (anki.currentTotal === 0 ? "" : anki.currentRemaining)
-                        font.family: brandFont
-                        font.pixelSize: 44
-                        font.weight: Font.Light
-                        color: "#777777"
                     }
 
                     MouseArea {
@@ -334,31 +381,16 @@ Window {
 
                 Rectangle { width: parent.width; height: 1; color: "#BBBBBB" }
 
-                // Notes
                 Item {
                     width: parent.width
-                    height: 200
+                    height: 220
 
                     Text {
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "NOTES"
+                        anchors.centerIn: parent
+                        text: homeView.confirmExit ? "tap again to leave" : "reMarkable"
                         font.family: brandFont
-                        font.pixelSize: 56
-                        font.letterSpacing: 8
+                        font.pixelSize: 84
                         color: "black"
-                    }
-
-                    Text {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        // Must be qualified: QML only puts the component root's
-                        // properties in unqualified scope, not every ancestor's.
-                        text: homeView.confirmExit ? "tap again to leave Anki" : "reMarkable"
-                        font.family: brandFont
-                        font.pixelSize: 44
-                        font.weight: Font.Light
-                        color: homeView.confirmExit ? "black" : "#777777"
                     }
 
                     MouseArea {
@@ -377,34 +409,6 @@ Window {
                 }
 
                 Rectangle { width: parent.width; height: 2; color: "black" }
-            }
-
-            // --- Colophon -------------------------------------------------
-            Column {
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 200
-                anchors.left: parent.left
-                anchors.leftMargin: parent.sideMargin
-                spacing: 10
-
-                Text {
-                    text: anki.batchInfo
-                    visible: anki.batchInfo !== ""
-                    font.family: brandFont
-                    font.pixelSize: 36
-                    font.weight: Font.Light
-                    color: "#888888"
-                }
-
-                Text {
-                    text: anki.currentTotal === 0
-                          ? "Run sync.ps1 on your computer to load cards"
-                          : "New cards arrive automatically over Wi-Fi"
-                    font.family: brandFont
-                    font.pixelSize: 36
-                    font.weight: Font.Light
-                    color: "#888888"
-                }
             }
         }
 
@@ -874,14 +878,14 @@ Window {
         anchors.right: parent.right
         // Fixed height now: the rating buttons moved into the scrollable card
         // content, so the footer no longer grows and steals space from it.
-        height: 80
+        height: anki.currentState === "HOME" ? 0 : 80
 
         Item {
             id: statusBar
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.right: parent.right
-            height: 80
+            height: anki.currentState === "HOME" ? 0 : 80
 
             Rectangle {
                 anchors.top: parent.top
