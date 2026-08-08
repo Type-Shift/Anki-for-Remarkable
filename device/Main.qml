@@ -18,7 +18,7 @@ Window {
     // requires stopping xochitl, which removes reMarkable's own settings UI.
     property bool wifiOpen: false
 
-    // Fonts â€” scaled for reMarkable high-DPI (1872x2404)
+    // Fonts - scaled for reMarkable high-DPI (1872x2404)
     property string defaultFont: "sans-serif"
     property int headerFontSize: 48
     property int largeFontSize: 72
@@ -299,8 +299,7 @@ Window {
                     }
 
                     Text {
-                        anchors.right: chevron1.left
-                        anchors.rightMargin: 40
+                        anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         text: anki.pendingAnswers > 0
                               ? (anki.pendingAnswers + " to sync")
@@ -309,16 +308,6 @@ Window {
                         font.pixelSize: 44
                         font.weight: Font.Light
                         color: "#777777"
-                    }
-
-                    Text {
-                        id: chevron1
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "â†’"
-                        font.family: defaultFont
-                        font.pixelSize: 56
-                        color: "black"
                     }
 
                     MouseArea {
@@ -345,8 +334,7 @@ Window {
                     }
 
                     Text {
-                        anchors.right: chevron2.left
-                        anchors.rightMargin: 40
+                        anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         // Must be qualified: QML only puts the component root's
                         // properties in unqualified scope, not every ancestor's.
@@ -355,16 +343,6 @@ Window {
                         font.pixelSize: 44
                         font.weight: Font.Light
                         color: homeView.confirmExit ? "black" : "#777777"
-                    }
-
-                    Text {
-                        id: chevron2
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "â†’"
-                        font.family: defaultFont
-                        font.pixelSize: 56
-                        color: "black"
                     }
 
                     MouseArea {
@@ -632,7 +610,7 @@ Window {
                             visible: modelData.visible
                             clip: true
 
-                            // Full-row tap â†’ start studying this deck
+                            // Full-row tap -> start studying this deck
                             MouseArea {
                                 anchors.fill: parent
                                 onClicked: anki.startStudy(index)
@@ -901,7 +879,7 @@ Window {
                 anchors.left: parent.left
                 anchors.leftMargin: 50
                 anchors.verticalCenter: parent.verticalCenter
-                text: "v1.0.0 - Jayy001 - ReMarkable"
+                text: ""
                 font.family: defaultFont
                 font.pixelSize: smallFontSize
                 color: "black"
@@ -1543,7 +1521,7 @@ Window {
                 anchors.right: parent.right
                 anchors.rightMargin: 50
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Close âœ•"
+                text: "Close"
                 font.family: defaultFont
                 font.pixelSize: headerFontSize
                 color: "black"
@@ -1711,7 +1689,7 @@ Window {
                                 text: {
                                     var b = modelData.bars
                                     var s = ""
-                                    for (var i = 0; i < 4; i++) s += (i < b ? "â–ˆ" : "â–‘")
+                                    for (var i = 0; i < 4; i++) s += (i < b ? "\u2588" : "\u2591")
                                     return s
                                 }
                                 font.family: "monospace"
@@ -1897,7 +1875,7 @@ Window {
                     width: 260; height: 100; radius: 12
                     border.color: "black"; border.width: 3; color: "white"
                     Text {
-                        anchors.centerIn: parent; text: "âŒ«"
+                        anchors.centerIn: parent; text: "\u232B"
                         font.family: defaultFont; font.pixelSize: smallFontSize; color: "black"
                     }
                     MouseArea { anchors.fill: parent; onClicked: wifiOverlay.backspace() }
