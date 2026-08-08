@@ -25,6 +25,13 @@ fi
 systemctl stop xochitl 2>/dev/null || true
 sleep 1
 
+# Keep only the previous run. The log was appended to forever, so a grep for
+# errors returned dozens of historical hits and said nothing about whether
+# THIS run was healthy.
+if [ -f "$LOG" ]; then
+    mv -f "$LOG" "${LOG}.prev"
+fi
+
 cd /home/root
 
 # systemd services inherit no HOME, so QDir::homePath() resolves to "/" and
