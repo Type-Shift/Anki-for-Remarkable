@@ -348,11 +348,13 @@ Window {
                         anchors.right: chevron2.left
                         anchors.rightMargin: 40
                         anchors.verticalCenter: parent.verticalCenter
-                        text: confirmExit ? "tap again to leave Anki" : "reMarkable"
+                        // Must be qualified: QML only puts the component root's
+                        // properties in unqualified scope, not every ancestor's.
+                        text: homeView.confirmExit ? "tap again to leave Anki" : "reMarkable"
                         font.family: defaultFont
                         font.pixelSize: 44
                         font.weight: Font.Light
-                        color: confirmExit ? "black" : "#777777"
+                        color: homeView.confirmExit ? "black" : "#777777"
                     }
 
                     Text {
@@ -368,12 +370,12 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            if (confirmExit) {
+                            if (homeView.confirmExit) {
                                 confirmTimer.stop()
-                                confirmExit = false
+                                homeView.confirmExit = false
                                 device.exitToNotes()
                             } else {
-                                confirmExit = true
+                                homeView.confirmExit = true
                                 confirmTimer.restart()
                             }
                         }
