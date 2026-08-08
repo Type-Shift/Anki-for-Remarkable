@@ -20,6 +20,22 @@ Window {
 
     // Fonts - scaled for reMarkable high-DPI (1872x2404)
     property string defaultFont: "sans-serif"
+
+    // The launcher uses reMarkable's own typeface where it exists. Resolved
+    // at runtime against the installed families rather than hardcoded, so a
+    // missing font degrades to the next choice instead of silently falling
+    // back to something arbitrary. Maison Neue is the stock UI face; the
+    // Noto families ship with the device as reading fonts.
+    property string brandFont: {
+        var prefs = ["Maison Neue", "MaisonNeue", "Noto Sans UI", "Noto Sans",
+                     "Roboto", "DejaVu Sans", "sans-serif"];
+        var available = Qt.fontFamilies();
+        for (var i = 0; i < prefs.length; i++) {
+            if (available.indexOf(prefs[i]) !== -1)
+                return prefs[i];
+        }
+        return "sans-serif";
+    }
     property int headerFontSize: 48
     property int largeFontSize: 72
     property int normalFontSize: 52
@@ -253,7 +269,7 @@ Window {
 
                 Text {
                     text: "Anki"
-                    font.family: defaultFont
+                    font.family: brandFont
                     font.pixelSize: 150
                     font.weight: Font.Light
                     color: "black"
@@ -263,7 +279,7 @@ Window {
                     text: anki.currentTotal === 0
                           ? "Nothing loaded"
                           : (anki.currentRemaining + " cards due")
-                    font.family: defaultFont
+                    font.family: brandFont
                     font.pixelSize: 52
                     font.weight: Font.Light
                     color: "#555555"
@@ -292,7 +308,7 @@ Window {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         text: "STUDY"
-                        font.family: defaultFont
+                        font.family: brandFont
                         font.pixelSize: 56
                         font.letterSpacing: 8
                         color: "black"
@@ -304,7 +320,7 @@ Window {
                         text: anki.pendingAnswers > 0
                               ? (anki.pendingAnswers + " to sync")
                               : (anki.currentTotal === 0 ? "" : anki.currentRemaining)
-                        font.family: defaultFont
+                        font.family: brandFont
                         font.pixelSize: 44
                         font.weight: Font.Light
                         color: "#777777"
@@ -327,7 +343,7 @@ Window {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         text: "NOTES"
-                        font.family: defaultFont
+                        font.family: brandFont
                         font.pixelSize: 56
                         font.letterSpacing: 8
                         color: "black"
@@ -339,7 +355,7 @@ Window {
                         // Must be qualified: QML only puts the component root's
                         // properties in unqualified scope, not every ancestor's.
                         text: homeView.confirmExit ? "tap again to leave Anki" : "reMarkable"
-                        font.family: defaultFont
+                        font.family: brandFont
                         font.pixelSize: 44
                         font.weight: Font.Light
                         color: homeView.confirmExit ? "black" : "#777777"
@@ -374,7 +390,7 @@ Window {
                 Text {
                     text: anki.batchInfo
                     visible: anki.batchInfo !== ""
-                    font.family: defaultFont
+                    font.family: brandFont
                     font.pixelSize: 36
                     font.weight: Font.Light
                     color: "#888888"
@@ -384,7 +400,7 @@ Window {
                     text: anki.currentTotal === 0
                           ? "Run sync.ps1 on your computer to load cards"
                           : "New cards arrive automatically over Wi-Fi"
-                    font.family: defaultFont
+                    font.family: brandFont
                     font.pixelSize: 36
                     font.weight: Font.Light
                     color: "#888888"
@@ -680,47 +696,43 @@ Window {
         }
 
         // --- View: Card Study ---
+        //
+        // The card scrolls. Previously it was a fixed Rectangle sized to its
+        // contents, so a long card simply ran off the bottom of the screen
+        // with no way to reach the rest of it. The rating buttons live at the
+        // END of the scrollable content rather than floating over the card,
+        // so answering never hides what you are reading.
         Item {
             id: studyScreen
             anchors.fill: parent
             visible: anki.currentState === "STUDY"
 
-            MouseArea {
+            Flickable {
+                id: cardScroll
                 anchors.fill: parent
-                enabled: !isAnswerRevealed
-                onClicked: isAnswerRevealed = true
-            }
+                anchors.leftMargin: 60
+                anchors.rightMargin: 60
+                anchors.topMargin: 40
+                anchors.bottomMargin: 20
+                contentHeight: cardColumn.height
+                clip: true
 
-            Rectangle {
-                id: flashcard
-                width: parent.width - 120
-                anchors.top: parent.top
-                anchors.topMargin: 80
-                anchors.horizontalCenter: parent.horizontalCenter
-
-                radius: 24
-                border.color: "black"
-                border.width: 3
-                color: "white"
-
-                height: cardContents.height + 120
+                // No kinetic scrolling: e-ink cannot repaint fast enough.
+                maximumFlickVelocity: 0
+                flickDeceleration: 100000
+                boundsBehavior: Flickable.StopAtBounds
+                pixelAligned: true
 
                 Column {
-                    id: cardContents
-                    anchors.top: parent.top
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.topMargin: 60
-                    anchors.leftMargin: 60
-                    anchors.rightMargin: 60
-                    spacing: 60
+                    id: cardColumn
+                    width: cardScroll.width
+                    spacing: 50
 
                     Text {
-                        text: truncate(anki.currentDeckName, 30)
+                        text: truncate(anki.currentDeckName, 40)
                         font.family: defaultFont
                         font.pixelSize: 36
-                        color: "black"
-                        opacity: 0.6
+                        color: "#666666"
                     }
 
                     Text {
@@ -732,34 +744,36 @@ Window {
                         width: parent.width
                     }
 
-                    Text {
-                        text: "(tap to reveal answer)"
-                        font.family: defaultFont
-                        font.pixelSize: smallFontSize
-                        color: "black"
-                        opacity: 0.4
+                    // Explicit button rather than a full-screen tap target:
+                    // a stray touch anywhere used to reveal the answer.
+                    Rectangle {
+                        width: parent.width
+                        height: 120
+                        radius: 20
+                        border.color: "black"
+                        border.width: 3
+                        color: "white"
                         visible: !isAnswerRevealed
-                        anchors.horizontalCenter: parent.horizontalCenter
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Show answer"
+                            font.family: defaultFont
+                            font.pixelSize: normalFontSize
+                            color: "black"
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: isAnswerRevealed = true
+                        }
                     }
 
-                    Item {
+                    Rectangle {
                         width: parent.width
-                        height: 4
+                        height: 2
+                        color: "black"
                         visible: isAnswerRevealed
-                        clip: true
-
-                        Row {
-                            spacing: 16
-                            Repeater {
-                                model: 100
-                                Rectangle {
-                                    width: 12
-                                    height: 4
-                                    color: "black"
-                                    opacity: 0.5
-                                }
-                            }
-                        }
                     }
 
                     Text {
@@ -771,16 +785,84 @@ Window {
                         width: parent.width
                         visible: isAnswerRevealed
                     }
+
+                    // Rating buttons, at the end of the card content.
+                    Grid {
+                        width: parent.width
+                        visible: isAnswerRevealed
+                        columns: 4
+                        columnSpacing: 30
+                        rowSpacing: 30
+
+                        Repeater {
+                            model: {
+                                var labels = anki.currentButtonLabels;
+                                var names  = ["Again", "Hard", "Good", "Easy"];
+                                var items  = [];
+                                for (var i = 0; i < labels.length && i < 4; i++) {
+                                    items.push({
+                                        label:  names[i] || ("Btn " + (i + 1)),
+                                        time:   labels[i],
+                                        button: i + 1
+                                    });
+                                }
+                                return items;
+                            }
+
+                            delegate: Rectangle {
+                                width: (cardColumn.width - 90) / 4
+                                height: 150
+                                radius: 20
+                                border.color: "black"
+                                border.width: 3
+                                color: "white"
+
+                                Column {
+                                    anchors.centerIn: parent
+                                    spacing: 8
+
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: modelData.label
+                                        font.family: defaultFont
+                                        font.pixelSize: normalFontSize
+                                        font.bold: true
+                                        color: "black"
+                                    }
+
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: modelData.time
+                                        font.family: defaultFont
+                                        font.pixelSize: smallFontSize
+                                        color: "#666666"
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: anki.answerCard(modelData.button)
+                                }
+                            }
+                        }
+                    }
+
+                    // Breathing room so the last row is never flush with the
+                    // bottom edge when scrolled fully down.
+                    Item { width: 1; height: 60 }
                 }
             }
         }
     }
 
-    // Reset isAnswerRevealed when a new card is shown
+    // Reset when a new card is shown. The scroll position must reset too:
+    // otherwise the next card opens already scrolled to wherever the last one
+    // was left, which looks like a blank or half-missing card.
     Connections {
         target: anki
         function onCurrentFrontChanged() {
             isAnswerRevealed = false
+            cardScroll.contentY = 0
         }
     }
 
@@ -790,76 +872,9 @@ Window {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        height: (anki.currentState === "STUDY" && isAnswerRevealed) ? 300 : 80
-
-        RowLayout {
-            id: ratingButtons
-            anchors.bottom: statusBar.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottomMargin: 30
-            height: 180
-            visible: anki.currentState === "STUDY" && isAnswerRevealed
-            spacing: 40
-
-            Item { Layout.fillWidth: true }
-
-            Repeater {
-                model: {
-                    var labels = anki.currentButtonLabels;
-                    var colors = ["#D32F2F", "#F57C00", "#388E3C", "#0288D1"];
-                    var names  = ["Again", "Hard", "Good", "Easy"];
-                    var items  = [];
-                    for (var i = 0; i < labels.length && i < 4; i++) {
-                        items.push({
-                            label:  names[i] || ("Btn " + (i+1)),
-                            time:   labels[i],
-                            color:  colors[i] || "#333333",
-                            button: i + 1
-                        });
-                    }
-                    return items;
-                }
-
-                delegate: Column {
-                    spacing: 16
-                    Layout.alignment: Qt.AlignHCenter | Qt.AlignBottom
-
-                    Text {
-                        text: modelData.time
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        font.family: defaultFont
-                        font.pixelSize: smallFontSize
-                        color: "black"
-                    }
-
-                    Rectangle {
-                        width: 260
-                        height: 110
-                        radius: 24
-                        border.color: modelData.color
-                        border.width: 5
-                        color: "white"
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: modelData.label
-                            font.family: defaultFont
-                            font.pixelSize: normalFontSize
-                            color: modelData.color
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: anki.answerCard(modelData.button)
-                        }
-                    }
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-        }
+        // Fixed height now: the rating buttons moved into the scrollable card
+        // content, so the footer no longer grows and steals space from it.
+        height: 80
 
         Item {
             id: statusBar
