@@ -221,10 +221,24 @@ Window {
         // shapes. E-ink flatters thin black-on-white line work and punishes
         // large solid fills, which ghost on partial refresh.
         Item {
+            id: homeView
             anchors.fill: parent
             visible: anki.currentState === "HOME"
 
             readonly property int sideMargin: 170
+
+            // Handing the screen to xochitl quits Anki and needs a reboot to
+            // undo, so it takes two taps. A single stray touch on e-ink must
+            // not be able to throw you out of the app.
+            property bool confirmExit: false
+
+            Timer {
+                id: confirmTimer
+                interval: 5000
+                // Timer is not an Item and has no `parent` property, so this
+                // must reference the view by id.
+                onTriggered: homeView.confirmExit = false
+            }
 
             // --- Masthead -------------------------------------------------
             Column {
@@ -334,11 +348,11 @@ Window {
                         anchors.right: chevron2.left
                         anchors.rightMargin: 40
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "reMarkable"
+                        text: confirmExit ? "tap again to leave Anki" : "reMarkable"
                         font.family: defaultFont
                         font.pixelSize: 44
                         font.weight: Font.Light
-                        color: "#777777"
+                        color: confirmExit ? "black" : "#777777"
                     }
 
                     Text {
@@ -353,7 +367,16 @@ Window {
 
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: device.exitToNotes()
+                        onClicked: {
+                            if (confirmExit) {
+                                confirmTimer.stop()
+                                confirmExit = false
+                                device.exitToNotes()
+                            } else {
+                                confirmExit = true
+                                confirmTimer.restart()
+                            }
+                        }
                     }
                 }
 

@@ -57,6 +57,11 @@ void DeviceActions::refreshBattery()
 
 void DeviceActions::exitToNotes()
 {
+    // Logged because a silent exit-0 is otherwise indistinguishable from a
+    // crash: the service just goes inactive. If this line appears without
+    // anyone touching the tablet, a stray input event reached the NOTES row.
+    qInfo() << "exitToNotes(): starting xochitl and quitting";
+
     // Start xochitl before quitting. When launched by anki-launcher.service
     // systemd would do this anyway via ExecStopPost, but doing it here means
     // a manually started app behaves the same.
