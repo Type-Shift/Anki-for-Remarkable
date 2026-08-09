@@ -17,6 +17,7 @@ qt_add_executable(anki
     offlineclient.cpp  offlineclient.h
     wifimanager.cpp    wifimanager.h
     deviceactions.cpp  deviceactions.h
+    syncmanager.cpp    syncmanager.h
     ankicore.h)
 
 qt_add_qml_module(anki

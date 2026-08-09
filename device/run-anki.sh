@@ -46,8 +46,10 @@ QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS="rotate=180"
 QT_QUICK_BACKEND=epaper
 export QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS QT_QUICK_BACKEND
 
-exec systemd-inhibit \
-    --what=sleep:idle \
-    --who=anki \
-    --why="Reviewing flashcards" \
-    "$APP" -platform epaper >>"$LOG" 2>&1
+# No sleep inhibitor. The app now handles idle suspend itself, after ten
+# minutes without input, the way the stock interface does -- and a blanket
+# inhibitor here would block its own suspend call.
+#
+# Transfers are still safe: deploy.ps1 takes out its own short-lived
+# inhibitor, and systemctl suspend honours it.
+exec "$APP" -platform epaper >>"$LOG" 2>&1

@@ -1,6 +1,8 @@
 #include "deviceactions.h"
 
 #include <QCoreApplication>
+#include <QEvent>
+#include <QGuiApplication>
 #include <QDebug>
 #include <QFile>
 #include <QProcess>
@@ -31,6 +33,12 @@ QString readFirst(const char *const paths[], int count)
 }
 }
 
+namespace {
+// Matches the stock reMarkable idle timeout closely enough that the tablet
+// behaves the way the user expects it to.
+constexpr int IDLE_SUSPEND_MS = 10 * 60 * 1000;
+}
+
 DeviceActions::DeviceActions(QObject *parent)
     : QObject(parent)
 {
@@ -39,6 +47,58 @@ DeviceActions::DeviceActions(QObject *parent)
     t->setInterval(60000);
     connect(t, &QTimer::timeout, this, &DeviceActions::refreshBattery);
     t->start();
+
+    // Idle suspend. xochitl normally does this, and it is stopped while Anki
+    // runs, so without it the tablet stays awake indefinitely.
+    m_idleTimer = new QTimer(this);
+    m_idleTimer->setSingleShot(true);
+    m_idleTimer->setInterval(IDLE_SUSPEND_MS);
+    connect(m_idleTimer, &QTimer::timeout, this, &DeviceActions::onIdleTimeout);
+    m_idleTimer->start();
+
+    if (qApp) qApp->installEventFilter(this);
+}
+
+bool DeviceActions::eventFilter(QObject *watched, QEvent *event)
+{
+    switch (event->type()) {
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseMove:
+    case QEvent::KeyPress:
+        if (m_idleTimer) m_idleTimer->start();   // restart the countdown
+        break;
+    default:
+        break;
+    }
+    return QObject::eventFilter(watched, event);
+}
+
+void DeviceActions::onIdleTimeout()
+{
+    // Charging is the one case where staying awake is the friendlier
+    // behaviour, and it also keeps the tablet reachable while it sits on a
+    // cable.
+    if (m_charging) {
+        m_idleTimer->start();
+        return;
+    }
+
+    qInfo() << "idle: suspending";
+    suspendDevice();
+}
+
+void DeviceActions::suspendDevice()
+{
+    // systemctl honours block inhibitors, so a deploy in progress will
+    // refuse this rather than dropping the link mid-transfer.
+    QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("suspend")});
+
+    // Start counting again for when it wakes.
+    if (m_idleTimer) m_idleTimer->start();
 }
 
 void DeviceActions::refreshBattery()

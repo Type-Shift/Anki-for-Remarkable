@@ -14,6 +14,11 @@ Window {
     // Everything else comes from the C++ "anki" context property.
     property bool isAnswerRevealed: false
 
+    // Whether the AnkiWeb sign-in sheet is open. The overlay below was
+    // built for the old online client and never shown; it already has the
+    // fields and keyboard, so it is reused rather than duplicated.
+    property bool syncLoginOpen: false
+
     // Whether the Wi-Fi panel is open. Needed because running this app
     // requires stopping xochitl, which removes reMarkable's own settings UI.
     property bool wifiOpen: false
@@ -352,6 +357,51 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         onClicked: anki.loadDecks()
+                    }
+                }
+
+                Rectangle { width: parent.width; height: 1; color: "#BBBBBB" }
+
+                // Sync. Shows what it is doing, since rslib's sync can take a
+                // while on this radio and silence would read as a hang.
+                Item {
+                    width: parent.width
+                    height: 220
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: {
+                            if (sync.busy) return sync.status
+                            if (!wifi.connected) return "Sync"
+                            return sync.loggedIn ? "Sync" : "Sign in"
+                        }
+                        font.family: brandFont
+                        font.pixelSize: 84
+                        color: (wifi.connected || sync.busy) ? "black" : "#AAAAAA"
+                    }
+
+                    Text {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: {
+                            if (sync.busy) return ""
+                            if (!wifi.connected) return "no Wi-Fi"
+                            if (sync.lastError !== "") return "failed"
+                            return sync.status
+                        }
+                        font.family: brandFont
+                        font.pixelSize: 40
+                        font.weight: Font.Light
+                        color: "#888888"
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: wifi.connected && !sync.busy
+                        onClicked: {
+                            if (sync.loggedIn) sync.sync()
+                            else               root.syncLoginOpen = true
+                        }
                     }
                 }
 
@@ -985,7 +1035,7 @@ Window {
     Item {
         id: loginOverlay
         anchors.fill: parent
-        visible: anki.currentState === "LOGIN"
+        visible: root.syncLoginOpen
         z: 100 // above everything
 
         // QML-local login state
@@ -1011,14 +1061,40 @@ Window {
         }
 
         function submitLogin() {
-            if (emailInput.length > 0 && passwordInput.length > 0)
-                anki.login(emailInput, passwordInput)
+            if (emailInput.length > 0 && passwordInput.length > 0) {
+                sync.login(emailInput, passwordInput)
+                // Do not keep the password in QML state once it has been
+                // handed over; rslib exchanges it for a key immediately.
+                passwordInput = ""
+                root.syncLoginOpen = false
+            }
         }
 
         // White background
         Rectangle {
             anchors.fill: parent
             color: "white"
+        }
+
+        // Without this the sheet could only be left by signing in.
+        Text {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.margins: 60
+            text: "Cancel"
+            font.family: brandFont
+            font.pixelSize: 48
+            color: "black"
+            z: 10
+
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -40
+                onClicked: {
+                    loginOverlay.passwordInput = ""
+                    root.syncLoginOpen = false
+                }
+            }
         }
 
         // ---- Top section: title + input fields ----
@@ -1031,7 +1107,7 @@ Window {
             spacing: 30
 
             Text {
-                text: "Sign in to AnkiWeb"
+                text: sync.busy ? sync.status : "Sign in to AnkiWeb"
                 font.family: defaultFont
                 font.pixelSize: largeFontSize
                 font.bold: true

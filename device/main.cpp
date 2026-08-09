@@ -4,6 +4,7 @@
 
 #include "deviceactions.h"
 #include "offlineclient.h"
+#include "syncmanager.h"
 #include "wifimanager.h"
 
 #ifdef HAVE_ANKICORE
@@ -38,10 +39,18 @@ int main(int argc, char *argv[])
     // Lets the user hand the framebuffer back to xochitl without a PC.
     DeviceActions device;
 
+    // AnkiWeb sync through rslib's own client.
+    SyncManager sync;
+
+    // A sync rewrites the collection underneath the deck list, so refresh it.
+    QObject::connect(&sync, &SyncManager::syncFinished, &client,
+                     [&client](bool ok) { if (ok) client.loadDecks(); });
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("anki"), &client);
     engine.rootContext()->setContextProperty(QStringLiteral("wifi"), &wifi);
     engine.rootContext()->setContextProperty(QStringLiteral("device"), &device);
+    engine.rootContext()->setContextProperty(QStringLiteral("sync"), &sync);
 
     QObject::connect(
         &engine,
