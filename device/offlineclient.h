@@ -112,12 +112,13 @@ private:
     int  pendingInDeck(const QString &deck) const;
     bool inActiveDeck(const OfflineCard &c) const;
 
-    // True when a button's interval label is short enough that Anki would
-    // show the card again in this sitting ("<1m", "10m") rather than parking
-    // it for a day or more ("3d", "2mo", "1.2y").
-    static bool isIntraSessionLabel(const QString &label);
+    // Minutes until Anki would next show this card, from its own button
+    // label ("<1m", "10m", "3d", "2mo"). Returns -1 when the interval is a
+    // day or more, meaning the card is finished for today.
+    static int labelToMinutes(const QString &label);
 
     void buildSessionQueue();
+    int  nextCardIndex();       // which card to show now, or -1 when done
     bool persistQueue();       // atomic + fsync; a lost answer is the one
                                // failure mode this whole project exists to fix
     void showNextCard();
@@ -131,11 +132,16 @@ private:
     QSet<qint64>         m_answeredIds;
     QVariantList         m_queuedAnswers;   // serialised straight to JSON
 
-    // Indices into m_cards, in the order they will be shown. A card graded
-    // Again or Hard goes to the back rather than disappearing, so learning
-    // steps repeat within the session as they do in Anki.
+    // Cards not yet seen this sitting, in batch order.
     QList<int> m_sessionQueue;
+
+    // Cards mid-learning: index -> epoch ms when Anki would show it again.
+    // Kept across deck switches, so stepping out of a deck and back does not
+    // discard work in progress or make the counts jump.
+    QHash<int, qint64> m_learningDue;
+
     QElapsedTimer m_cardTimer;
+    int m_currentIndex = -1;    // card on screen, or -1
 
     QString      m_currentState;
     QVariantList m_deckData;

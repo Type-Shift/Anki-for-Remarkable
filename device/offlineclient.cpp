@@ -391,29 +391,74 @@ void OfflineAnkiClient::startStudy(int index)
     showNextCard();
 }
 
-bool OfflineAnkiClient::isIntraSessionLabel(const QString &label)
+int OfflineAnkiClient::labelToMinutes(const QString &label)
 {
     // Anki's own button labels: "<1m", "10m", "3d", "2mo", "1.2y".
-    // Anything measured in seconds or minutes comes back in this sitting.
-    // "mo" must be tested before "m", or every month-long interval would be
-    // mistaken for minutes and the card would never leave the session.
-    const QString l = label.trimmed().toLower();
-    if (l.isEmpty()) return false;
-    if (l.endsWith(QLatin1String("mo"))) return false;   // months
-    if (l.endsWith(QLatin1Char('y')))    return false;   // years
-    if (l.endsWith(QLatin1Char('d')))    return false;   // days
-    if (l.endsWith(QLatin1Char('h')))    return false;   // hours
-    return l.endsWith(QLatin1Char('m')) || l.endsWith(QLatin1Char('s'));
+    // "mo" must be tested before "m", or every month-long interval would read
+    // as minutes and the card would never leave the session.
+    QString l = label.trimmed().toLower();
+    if (l.isEmpty()) return -1;
+    l.remove(QLatin1Char('<'));
+    l.remove(QLatin1Char('~'));
+
+    if (l.endsWith(QLatin1String("mo")) || l.endsWith(QLatin1Char('y')) ||
+        l.endsWith(QLatin1Char('d')))
+        return -1;                                   // a day or more: done today
+
+    const QString number = l.left(l.size() - 1);
+    bool ok = false;
+    const double value = number.toDouble(&ok);
+    if (!ok) return -1;
+
+    if (l.endsWith(QLatin1Char('s'))) return 1;      // round sub-minute up to 1
+    if (l.endsWith(QLatin1Char('m'))) return qMax(1, int(value));
+    if (l.endsWith(QLatin1Char('h'))) return qMax(1, int(value * 60));
+    return -1;
 }
 
 void OfflineAnkiClient::buildSessionQueue()
 {
+    // Only the not-yet-seen cards. Learning cards live in m_learningDue and
+    // deliberately survive leaving and re-entering a deck.
     m_sessionQueue.clear();
     for (int i = 0; i < m_cards.size(); ++i) {
         if (m_answeredIds.contains(m_cards[i].cardId)) continue;
+        if (m_learningDue.contains(i)) continue;
         if (!inActiveDeck(m_cards[i])) continue;
         m_sessionQueue.append(i);
     }
+}
+
+int OfflineAnkiClient::nextCardIndex()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // 1. A learning card that is actually due wins, as in Anki.
+    int soonest = -1;
+    qint64 soonestDue = 0;
+    for (auto it = m_learningDue.constBegin(); it != m_learningDue.constEnd(); ++it) {
+        if (!inActiveDeck(m_cards[it.key()])) continue;
+        if (soonest < 0 || it.value() < soonestDue) {
+            soonest = it.key();
+            soonestDue = it.value();
+        }
+    }
+    if (soonest >= 0 && soonestDue <= now) return soonest;
+
+    // 2. Otherwise show something new while the learning card matures.
+    while (!m_sessionQueue.isEmpty()) {
+        const int idx = m_sessionQueue.first();
+        if (m_answeredIds.contains(m_cards[idx].cardId) || !inActiveDeck(m_cards[idx])) {
+            m_sessionQueue.removeFirst();
+            continue;
+        }
+        return idx;
+    }
+
+    // 3. Nothing new left: show the earliest learning card even if its step
+    //    has not elapsed. Waiting on a timer would strand the user staring at
+    //    a finished screen with cards still owed.
+    return soonest;
 }
 
 bool OfflineAnkiClient::inActiveDeck(const OfflineCard &c) const
@@ -425,19 +470,16 @@ bool OfflineAnkiClient::inActiveDeck(const OfflineCard &c) const
 
 void OfflineAnkiClient::showNextCard()
 {
-    // Drop anything finished for today that is still sitting in the queue.
-    while (!m_sessionQueue.isEmpty() &&
-           m_answeredIds.contains(m_cards[m_sessionQueue.first()].cardId))
-        m_sessionQueue.removeFirst();
+    m_currentIndex = nextCardIndex();
 
-    if (m_sessionQueue.isEmpty()) {
+    if (m_currentIndex < 0) {
         m_currentRemaining = 0;
         emit currentRemainingChanged();
         setCurrentState(QStringLiteral("DONE"));
         return;
     }
 
-    const OfflineCard &c = m_cards[m_sessionQueue.first()];
+    const OfflineCard &c = m_cards[m_currentIndex];
 
     m_currentFront = c.question;
     emit currentFrontChanged();
@@ -448,9 +490,14 @@ void OfflineAnkiClient::showNextCard()
     m_currentButtonLabels = c.buttons;
     emit currentButtonLabelsChanged();
 
-    // Counts what is still to be shown in this sitting, including cards
-    // waiting to come back round, rather than only untouched cards.
-    m_currentRemaining = m_sessionQueue.size();
+    // Everything still owed in this sitting: untouched cards plus those
+    // mid-learning. Counting only untouched cards was why the number dropped
+    // as soon as a card was answered, even though it was coming back.
+    int learningHere = 0;
+    for (auto it = m_learningDue.constBegin(); it != m_learningDue.constEnd(); ++it)
+        if (inActiveDeck(m_cards[it.key()])) ++learningHere;
+
+    m_currentRemaining = m_sessionQueue.size() + learningHere;
     emit currentRemainingChanged();
 
     m_cardTimer.start();
@@ -459,15 +506,16 @@ void OfflineAnkiClient::showNextCard()
 
 void OfflineAnkiClient::answerCard(int button)
 {
-    if (m_sessionQueue.isEmpty()) return;
+    if (m_currentIndex < 0 || m_currentIndex >= m_cards.size()) return;
     if (button < 1 || button > 4) return;
 
-    const int cardIndex = m_sessionQueue.first();
+    const int cardIndex = m_currentIndex;
     const OfflineCard &c = m_cards[cardIndex];
 
     const QString label = (button - 1) < c.buttons.size()
                           ? c.buttons.at(button - 1) : QString();
-    const bool comesBack = isIntraSessionLabel(label);
+    const int minutes = labelToMinutes(label);
+    const bool comesBack = minutes > 0;
 
     QVariantMap entry;
     entry.insert(QStringLiteral("card_id"),     c.cardId);
@@ -510,10 +558,14 @@ void OfflineAnkiClient::answerCard(int button)
     emit cardsReviewedChanged();
     emit pendingAnswersChanged();
 
-    m_sessionQueue.removeFirst();
+    m_sessionQueue.removeAll(cardIndex);
     if (comesBack) {
-        // Again/Hard: back of the queue, to be seen again this sitting.
-        m_sessionQueue.append(cardIndex);
+        // Due when Anki's own label says, so a "<1m" card returns before a
+        // "10m" one instead of both going to the back of a flat queue.
+        m_learningDue.insert(cardIndex,
+                             QDateTime::currentMSecsSinceEpoch() + qint64(minutes) * 60000);
+    } else {
+        m_learningDue.remove(cardIndex);
     }
 
     showNextCard();
