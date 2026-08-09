@@ -16,6 +16,15 @@ crate-type = ["staticlib"]
 anki = { git = "https://github.com/ankitects/anki", tag = "25.09.2" }
 serde_json = "1"
 
+# Not used directly. Built standalone, rslib does not get the feature
+# unification it gets inside Anki's own workspace, and tokio lands without
+# "io-util": rslib's sync code then fails to find AsyncReadExt/read_to_end,
+# and async-compression's ZstdDecoder loses the trait bounds it needs.
+# Naming tokio here turns those features back on for the shared build.
+tokio = { version = "1", features = [
+    "io-util", "rt-multi-thread", "macros", "sync", "time", "net", "fs",
+] }
+
 [profile.release]
 # The device has 477 MB of RAM and one core; favour size over speed.
 opt-level = "z"
