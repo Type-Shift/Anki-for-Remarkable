@@ -138,7 +138,16 @@ $h = @{ Authorization = "Bearer $(Get-Token)"
 $arts = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/actions/artifacts" `
                           -Headers $h -TimeoutSec 30
 if (-not $arts.artifacts) { Fail "No build artifacts found." }
-$art = $arts.artifacts[0]
+
+# Select by NAME, never by recency. Taking artifacts[0] meant that once the
+# rslib spike started publishing spike-report after every ankicore change,
+# the newest artifact was a text file -- and it got installed as the app.
+$art = $arts.artifacts |
+       Where-Object { $_.name -eq 'anki_rm1' -and -not $_.expired } |
+       Sort-Object created_at -Descending |
+       Select-Object -First 1
+if (-not $art) { Fail "No 'anki_rm1' artifact found. Has the build workflow run?" }
+Write-Host "    artifact: $($art.name) from $($art.created_at)"
 
 $zip  = Join-Path $env:TEMP 'rmanki-deploy.zip'
 $dest = Join-Path $env:TEMP 'rmanki-deploy'
@@ -165,7 +174,20 @@ try {
 Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive $zip -DestinationPath $dest
 $bin = (Get-ChildItem $dest -File | Select-Object -First 1).FullName
-Write-Host ("    {0:N0} bytes" -f (Get-Item $bin).Length)
+$binSize = (Get-Item $bin).Length
+Write-Host ("    {0:N0} bytes" -f $binSize)
+
+# Sanity-check what we are about to install. A wrong artifact once got as far
+# as replacing the app with a text file, which passed the checksum test
+# perfectly well because the checksum only proves the copy arrived intact.
+if ($binSize -lt 1MB) {
+    Fail "Downloaded file is only $binSize bytes -- that is not the app binary."
+}
+$magic = [System.IO.File]::ReadAllBytes($bin)[0..3]
+if (-not ($magic[0] -eq 0x7F -and $magic[1] -eq 0x45 -and $magic[2] -eq 0x4C -and $magic[3] -eq 0x46)) {
+    Fail "Downloaded file is not an ELF executable. Refusing to install it."
+}
+Write-Host "    verified ELF executable"
 
 # --- copy -------------------------------------------------------------------
 # Staged as .new then moved, so an interrupted transfer never replaces a
