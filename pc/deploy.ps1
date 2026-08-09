@@ -35,6 +35,66 @@ $sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20','-o','ServerAliveInte
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 
+function Send-FileChunked {
+    <#
+        Copy a file across in pieces, retrying each piece.
+
+        The binary reached 29 MB once Anki's Rust backend was linked in, and
+        the tablet's Wi-Fi will not hold a single transfer that long: it reset
+        or timed out every attempt, even with the device pinned awake. Each
+        chunk is small enough to complete between dropouts, and only the
+        failed chunk is repeated rather than the whole file.
+    #>
+    param(
+        [string]$LocalPath,
+        [string]$RemotePath,
+        [string]$Device,
+        [string[]]$SshOpts,
+        [int]$ChunkMB = 4,
+        [int]$MaxRetries = 6
+    )
+
+    $chunkDir = Join-Path $env:TEMP 'rmanki-chunks'
+    Remove-Item $chunkDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $chunkDir | Out-Null
+
+    $bytes = [System.IO.File]::ReadAllBytes($LocalPath)
+    $chunkSize = $ChunkMB * 1MB
+    $count = [math]::Ceiling($bytes.Length / $chunkSize)
+    Write-Host ("    {0:N0} bytes in {1} chunks of {2} MB" -f $bytes.Length, $count, $ChunkMB)
+
+    & ssh @SshOpts "root@$Device" "rm -rf /home/root/.chunks; mkdir -p /home/root/.chunks"
+
+    for ($i = 0; $i -lt $count; $i++) {
+        $offset = $i * $chunkSize
+        $len = [math]::Min($chunkSize, $bytes.Length - $offset)
+        $name = "part{0:d4}" -f $i
+        $path = Join-Path $chunkDir $name
+        $buf = New-Object byte[] $len
+        [Array]::Copy($bytes, $offset, $buf, 0, $len)
+        [System.IO.File]::WriteAllBytes($path, $buf)
+
+        $sent = $false
+        for ($try = 1; $try -le $MaxRetries; $try++) {
+            & scp -C @SshOpts $path "root@${Device}:/home/root/.chunks/$name" 2>$null
+            if ($LASTEXITCODE -eq 0) { $sent = $true; break }
+            Write-Host "      chunk $($i+1)/$count attempt $try failed; waiting for the tablet" -ForegroundColor DarkYellow
+            Start-Sleep -Seconds 10
+        }
+        if (-not $sent) {
+            Remove-Item $chunkDir -Recurse -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        Write-Host ("      chunk {0}/{1}" -f ($i + 1), $count)
+    }
+
+    Remove-Item $chunkDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Reassemble in order, then drop the pieces.
+    & ssh @SshOpts "root@$Device" "cat /home/root/.chunks/part* > '$RemotePath' && rm -rf /home/root/.chunks"
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Get-Token {
     if (-not (Test-Path $TokenPath)) { Fail "No GitHub token at $TokenPath" }
     $raw = [System.IO.File]::ReadAllText($TokenPath).TrimStart([char]0xFEFF).Trim()
@@ -117,10 +177,10 @@ Write-Host ("    {0:N0} bytes" -f (Get-Item $bin).Length)
 Write-Host "==> holding tablet awake" -ForegroundColor Cyan
 & ssh @sshOpts "root@$Device" 'setsid nohup systemd-inhibit --what=sleep:idle --who=deploy --why="Receiving update" sleep 1800 </dev/null >/dev/null 2>&1 & echo held'
 
-Write-Host "==> copying to tablet (slow over the tablet's Wi-Fi)" -ForegroundColor Cyan
-& scp -C @sshOpts $bin "root@${Device}:/home/root/anki-offline.new"
-$copyRc = $LASTEXITCODE
-if ($copyRc -ne 0) {
+Write-Host "==> copying to tablet (chunked; the link drops on long transfers)" -ForegroundColor Cyan
+$ok = Send-FileChunked -LocalPath $bin -RemotePath '/home/root/anki-offline.new' `
+                       -Device $Device -SshOpts $sshOpts
+if (-not $ok) {
     & ssh @sshOpts "root@$Device" 'pkill -f "systemd-inhibit --what=sleep:idle --who=deploy" 2>/dev/null; true'
     Fail "Binary transfer failed; the existing app is untouched."
 }
