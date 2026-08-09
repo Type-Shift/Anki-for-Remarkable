@@ -1,0 +1,145 @@
+name: Spike - cross-compile rslib for rM1
+
+# Answers the one question that decides whether true 1:1 Anki scheduling is
+# possible on this device: does Anki's own Rust backend cross-compile for
+# armv7 against reMarkable's SDK sysroot?
+#
+# Deliberately never fails the run. A build error IS the result we need, and
+# the details are written into the artifact -- the Actions log API redirects
+# to a signed URL that cannot carry an auth header, so logs are awkward to
+# read programmatically. Everything worth seeing lands in spike-report.txt.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'device/ankicore/**'
+      - '.github/workflows/spike-rslib.yml'
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+
+    env:
+      TOOLCHAIN_URL: https://storage.googleapis.com/remarkable-codex-toolchain/3.27.0.97/rm1/remarkable-production-image-5.7.119-rm1-public-x86_64-toolchain.sh
+      TARGET: armv7-unknown-linux-gnueabihf
+      REPORT: spike-report.txt
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake wget xz-utils file protobuf-compiler pkg-config
+
+      - name: Cache toolchain
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: sdk
+          key: rm1-sdk-3.27.0.97
+
+      - name: Download and install reMarkable toolchain
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          wget -q "$TOOLCHAIN_URL" -O toolchain.sh
+          chmod +x toolchain.sh
+          ./toolchain.sh -y -d sdk
+
+      - name: Record toolchain facts
+        run: |
+          {
+            echo "=== environment-setup scripts ==="
+            ls sdk/environment-setup-* || true
+            echo
+            ENV_SETUP="$(ls sdk/environment-setup-* | head -n1)"
+            set +u; source "$ENV_SETUP"; set -u
+            echo "=== key variables ==="
+            echo "CC        = ${CC:-unset}"
+            echo "CXX       = ${CXX:-unset}"
+            echo "AR        = ${AR:-unset}"
+            echo "SDKTARGETSYSROOT = ${SDKTARGETSYSROOT:-unset}"
+            echo "CROSS_COMPILE    = ${CROSS_COMPILE:-unset}"
+            echo
+            echo "=== compiler ==="
+            ${CC} --version | head -n 2 || true
+            echo
+            echo "=== sysroot glibc ==="
+            ls "${SDKTARGETSYSROOT}/lib/libc.so."* 2>/dev/null || true
+            "${SDKTARGETSYSROOT}/lib/ld-linux-armhf.so.3" --version 2>/dev/null | head -n1 || true
+          } | tee -a "$REPORT"
+
+      - name: Install Rust and the armv7 target
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          . "$HOME/.cargo/env"
+          rustup target add "$TARGET"
+          { echo; echo "=== rust ==="; rustc --version; cargo --version; } | tee -a "$REPORT"
+
+      - name: Cross-compile the rslib shim
+        id: build
+        continue-on-error: true
+        run: |
+          . "$HOME/.cargo/env"
+          ENV_SETUP="$(ls sdk/environment-setup-* | head -n1)"
+          set +u; source "$ENV_SETUP"; set -u
+
+          # The SDK's CC carries its own --sysroot and flags. Rust must link
+          # against the SAME sysroot as the Qt app, or the two halves of the
+          # binary disagree about glibc.
+          TARGET_UPPER="$(echo "$TARGET" | tr 'a-z-' 'A-Z_')"
+          export CARGO_TARGET_${TARGET_UPPER}_LINKER="${CC%% *}"
+          export CARGO_TARGET_${TARGET_UPPER}_RUSTFLAGS="-C link-arg=--sysroot=${SDKTARGETSYSROOT}"
+          export CC_armv7_unknown_linux_gnueabihf="${CC}"
+          export AR_armv7_unknown_linux_gnueabihf="${AR}"
+          export PROTOC="$(command -v protoc)"
+          export PKG_CONFIG_ALLOW_CROSS=1
+
+          {
+            echo
+            echo "=== build attempt ==="
+            echo "linker  = ${CC%% *}"
+            echo "sysroot = ${SDKTARGETSYSROOT}"
+            echo "protoc  = ${PROTOC}"
+          } | tee -a "$REPORT"
+
+          cd device/ankicore
+          set +e
+          cargo build --release --target "$TARGET" 2>&1 | tee /tmp/cargo.log
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          cd "$GITHUB_WORKSPACE"
+          {
+            echo "exit code = ${RC}"
+            echo
+            if [ "$RC" -eq 0 ]; then
+              echo "=== SUCCESS: artifact ==="
+              ls -la device/ankicore/target/${TARGET}/release/libankicore.a
+              file device/ankicore/target/${TARGET}/release/libankicore.a
+              echo "size: $(stat -c%s device/ankicore/target/${TARGET}/release/libankicore.a) bytes"
+            else
+              echo "=== FAILED: last 120 lines ==="
+              tail -n 120 /tmp/cargo.log
+            fi
+          } | tee -a "$REPORT"
+
+          echo "rc=${RC}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise
+        run: |
+          echo "### rslib spike" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spike-report
+          path: |
+            spike-report.txt
+            device/ankicore/target/${{ env.TARGET }}/release/libankicore.a
+          if-no-files-found: warn
