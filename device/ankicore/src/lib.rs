@@ -19,6 +19,8 @@ use std::sync::Mutex;
 
 use anki::collection::{Collection, CollectionBuilder};
 use anki::prelude::*;
+// counts_for_deck_today is inherent-private; it reaches us through this trait.
+use anki::services::SchedulerService;
 use serde_json::{json, Value};
 
 // rslib's Collection is not Sync, and the Qt side is single-threaded anyway.
@@ -165,7 +167,7 @@ pub extern "C" fn ankicore_next_card(deck_id: i64) -> *mut c_char {
     with_collection(|col| {
         col.set_current_deck(DeckId(deck_id))?;
 
-        let queued = col.next_card()?;
+        let queued = col.get_next_card()?;
         let queued = match queued {
             Some(q) => q,
             None => {
@@ -215,7 +217,7 @@ pub extern "C" fn ankicore_answer_card(
             invalid_input!("rating must be 1-4, got {rating}");
         }
 
-        let queued = col.next_card()?.or_invalid("no card to answer")?;
+        let queued = col.get_next_card()?.or_invalid("no card to answer")?;
         if queued.card.id.0 != card_id {
             invalid_input!("card on screen is no longer the scheduler's next card");
         }
@@ -232,7 +234,7 @@ pub extern "C" fn ankicore_answer_card(
             _ => states.easy,
         };
 
-        let answer = anki::scheduler::answering::CardAnswer {
+        let mut answer = anki::scheduler::answering::CardAnswer {
             card_id: queued.card.id,
             current_state: states.current,
             new_state,
@@ -245,73 +247,20 @@ pub extern "C" fn ankicore_answer_card(
             answered_at: TimestampMillis::now(),
             milliseconds_taken: milliseconds_taken.max(0) as u32,
             custom_data: None,
+            // The card came from the scheduler's queue, not a preview.
+            from_queue: true,
         };
 
-        col.answer_card(&answer)?;
+        col.answer_card(&mut answer)?;
         Ok(json!({}))
     })
 }
 
-/// Sync with AnkiWeb or a local sync server.
-#[no_mangle]
-pub extern "C" fn ankicore_sync(
-    endpoint: *const c_char,
-    hkey: *const c_char,
-) -> *mut c_char {
-    let endpoint = c_str(endpoint).unwrap_or("").to_owned();
-    let hkey = match c_str(hkey) {
-        Some(k) if !k.is_empty() => k.to_owned(),
-        _ => return err_json("sync", "missing auth key"),
-    };
-
-    with_collection(move |col| {
-        let auth = anki::sync::login::SyncAuth {
-            hkey,
-            endpoint: if endpoint.is_empty() {
-                None
-            } else {
-                endpoint.parse().ok()
-            },
-            io_timeout_secs: None,
-        };
-        let out = col.normal_sync(auth, |_, _| {})?;
-        Ok(json!({ "status": format!("{:?}", out.required) }))
-    })
-}
-
-/// Obtain a sync key from a username and password.
-#[no_mangle]
-pub extern "C" fn ankicore_sync_login(
-    endpoint: *const c_char,
-    username: *const c_char,
-    password: *const c_char,
-) -> *mut c_char {
-    let endpoint = c_str(endpoint).unwrap_or("").to_owned();
-    let username = c_str(username).unwrap_or("").to_owned();
-    let password = c_str(password).unwrap_or("").to_owned();
-
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return err_json("sync_login", e),
-    };
-
-    let endpoint_parsed = if endpoint.is_empty() {
-        None
-    } else {
-        endpoint.parse().ok()
-    };
-
-    match rt.block_on(anki::sync::login::sync_login(
-        &username,
-        &password,
-        endpoint_parsed,
-        None,
-    )) {
-        Ok(auth) => to_c_string(json!({ "ok": true, "hkey": auth.hkey })),
-        Err(e) => err_json("sync_login", e),
-    }
-}
-
+// Native sync is deliberately absent for now. rslib's normal_sync and
+// sync_login both take a reqwest::Client constructed rslib's own way, and
+// guessing that constructor risks a version mismatch against the reqwest it
+// vendors. Sync stays brokered by the PC, which is already proven, until the
+// client builder can be confirmed against a working build.
 // --- text rendering ---------------------------------------------------------
 
 fn strip_html(raw: &str) -> String {
