@@ -91,69 +91,11 @@ Window {
                 }
             }
 
-            Text {
-                text: {
-                    if (anki.currentState === "STUDY" || anki.currentState === "DONE") return truncate(anki.currentDeckName, 30);
-                    if (anki.currentState === "LOADING") return "reMarkable Anki";
-                    if (anki.currentState === "ERROR") return "Error";
-                    return "reMarkable Anki";
-                }
-                font.family: defaultFont
-                font.pixelSize: headerFontSize
-                color: "black"
-            }
         }
 
-        Item {
-            anchors.right: parent.right
-            anchors.rightMargin: 50
-            anchors.verticalCenter: parent.verticalCenter
-            width: 500
-            height: parent.height
-
-            Column {
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                width: 400
-                spacing: 12
-                visible: anki.currentState === "STUDY"
-
-                Text {
-                    anchors.right: parent.right
-                    text: "Remaining: " + anki.currentRemaining
-                    font.family: defaultFont
-                    font.pixelSize: smallFontSize
-                    color: "black"
-                }
-
-                Rectangle {
-                    width: parent.width
-                    height: 16
-                    color: "white"
-                    border.color: "black"
-                    border.width: 2
-
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        anchors.margins: 2
-                        color: "black"
-                        width: anki.currentTotal > 0
-                               ? parent.width * (1 - (anki.currentRemaining / anki.currentTotal))
-                               : 0
-                        onWidthChanged: if (width < 0) width = 0
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 3
-            color: "black"
-        }
+        // Deliberately nothing else here. The title, the remaining counter,
+        // the progress bar and the rule below them were all furniture; the
+        // deck list and the card say what is going on without them.
     }
 
     // 2. Main Content Area
@@ -925,13 +867,11 @@ Window {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        // Fixed height now: the rating buttons moved into the scrollable card
-        // content, so the footer no longer grows and steals space from it.
-        height: 80
-        // Zero height alone was not enough -- Item does not clip, so the
-        // status bar inside kept drawing and a sliver stayed visible on the
-        // launcher. Hide the whole thing instead.
-        visible: anki.currentState !== "HOME"
+        // Gone entirely. The clock, battery, Wi-Fi state and Home link all
+        // live on the launcher, which is one tap away; repeating them under
+        // every card was noise. Height stays zero so nothing reserves space.
+        height: 0
+        visible: false
 
         Item {
             id: statusBar
