@@ -387,8 +387,33 @@ void OfflineAnkiClient::startStudy(int index)
     m_currentTotal = pendingInDeck(m_activeDeck);
     emit currentTotalChanged();
 
-    m_index = 0;
+    buildSessionQueue();
     showNextCard();
+}
+
+bool OfflineAnkiClient::isIntraSessionLabel(const QString &label)
+{
+    // Anki's own button labels: "<1m", "10m", "3d", "2mo", "1.2y".
+    // Anything measured in seconds or minutes comes back in this sitting.
+    // "mo" must be tested before "m", or every month-long interval would be
+    // mistaken for minutes and the card would never leave the session.
+    const QString l = label.trimmed().toLower();
+    if (l.isEmpty()) return false;
+    if (l.endsWith(QLatin1String("mo"))) return false;   // months
+    if (l.endsWith(QLatin1Char('y')))    return false;   // years
+    if (l.endsWith(QLatin1Char('d')))    return false;   // days
+    if (l.endsWith(QLatin1Char('h')))    return false;   // hours
+    return l.endsWith(QLatin1Char('m')) || l.endsWith(QLatin1Char('s'));
+}
+
+void OfflineAnkiClient::buildSessionQueue()
+{
+    m_sessionQueue.clear();
+    for (int i = 0; i < m_cards.size(); ++i) {
+        if (m_answeredIds.contains(m_cards[i].cardId)) continue;
+        if (!inActiveDeck(m_cards[i])) continue;
+        m_sessionQueue.append(i);
+    }
 }
 
 bool OfflineAnkiClient::inActiveDeck(const OfflineCard &c) const
@@ -400,21 +425,19 @@ bool OfflineAnkiClient::inActiveDeck(const OfflineCard &c) const
 
 void OfflineAnkiClient::showNextCard()
 {
-    // Skip anything already answered or outside the deck being studied, so a
-    // restart resumes where we left off and decks stay separate.
-    while (m_index < m_cards.size() &&
-           (m_answeredIds.contains(m_cards[m_index].cardId) ||
-            !inActiveDeck(m_cards[m_index])))
-        ++m_index;
+    // Drop anything finished for today that is still sitting in the queue.
+    while (!m_sessionQueue.isEmpty() &&
+           m_answeredIds.contains(m_cards[m_sessionQueue.first()].cardId))
+        m_sessionQueue.removeFirst();
 
-    if (m_index >= m_cards.size()) {
+    if (m_sessionQueue.isEmpty()) {
         m_currentRemaining = 0;
         emit currentRemainingChanged();
         setCurrentState(QStringLiteral("DONE"));
         return;
     }
 
-    const OfflineCard &c = m_cards[m_index];
+    const OfflineCard &c = m_cards[m_sessionQueue.first()];
 
     m_currentFront = c.question;
     emit currentFrontChanged();
@@ -425,8 +448,9 @@ void OfflineAnkiClient::showNextCard()
     m_currentButtonLabels = c.buttons;
     emit currentButtonLabelsChanged();
 
-    m_currentRemaining = m_activeDeck.isEmpty() ? pendingCount()
-                                                : pendingInDeck(m_activeDeck);
+    // Counts what is still to be shown in this sitting, including cards
+    // waiting to come back round, rather than only untouched cards.
+    m_currentRemaining = m_sessionQueue.size();
     emit currentRemainingChanged();
 
     m_cardTimer.start();
@@ -435,10 +459,15 @@ void OfflineAnkiClient::showNextCard()
 
 void OfflineAnkiClient::answerCard(int button)
 {
-    if (m_index < 0 || m_index >= m_cards.size()) return;
+    if (m_sessionQueue.isEmpty()) return;
     if (button < 1 || button > 4) return;
 
-    const OfflineCard &c = m_cards[m_index];
+    const int cardIndex = m_sessionQueue.first();
+    const OfflineCard &c = m_cards[cardIndex];
+
+    const QString label = (button - 1) < c.buttons.size()
+                          ? c.buttons.at(button - 1) : QString();
+    const bool comesBack = isIntraSessionLabel(label);
 
     QVariantMap entry;
     entry.insert(QStringLiteral("card_id"),     c.cardId);
@@ -448,15 +477,28 @@ void OfflineAnkiClient::answerCard(int button)
                  m_cardTimer.isValid() ? qMin<qint64>(m_cardTimer.elapsed(), 600000) : 0);
     entry.insert(QStringLiteral("states_b64"),  c.statesB64);
 
+    // Keep only the latest answer per card. The scheduling states in the
+    // batch were captured once, so the PC can apply a given card exactly
+    // once -- a second answer would be rejected as stale. Sending the final
+    // grade means the card lands where the user left it.
+    const QVariantList previous = m_queuedAnswers;
+    for (int i = m_queuedAnswers.size() - 1; i >= 0; --i) {
+        if (m_queuedAnswers.at(i).toMap()
+                .value(QStringLiteral("card_id")).toLongLong() == c.cardId) {
+            m_queuedAnswers.removeAt(i);
+        }
+    }
     m_queuedAnswers.append(entry);
-    m_answeredIds.insert(c.cardId);
+
+    const bool wasAnswered = m_answeredIds.contains(c.cardId);
+    if (!comesBack) m_answeredIds.insert(c.cardId);
 
     // Persist before advancing. RmAnki's failure mode was losing reviews
     // silently; here the answer is on disk before the UI moves on, and a
     // write failure is surfaced rather than logged and forgotten.
     if (!persistQueue()) {
-        m_queuedAnswers.removeLast();
-        m_answeredIds.remove(c.cardId);
+        m_queuedAnswers = previous;
+        if (!wasAnswered) m_answeredIds.remove(c.cardId);
         setError(QStringLiteral(
             "Could not save your answer to %1.\n\n"
             "Nothing has been lost, but reviewing cannot continue safely "
@@ -468,7 +510,12 @@ void OfflineAnkiClient::answerCard(int button)
     emit cardsReviewedChanged();
     emit pendingAnswersChanged();
 
-    ++m_index;
+    m_sessionQueue.removeFirst();
+    if (comesBack) {
+        // Again/Hard: back of the queue, to be seen again this sitting.
+        m_sessionQueue.append(cardIndex);
+    }
+
     showNextCard();
 }
 
