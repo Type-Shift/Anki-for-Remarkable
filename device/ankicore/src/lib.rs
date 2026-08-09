@@ -6,22 +6,34 @@
 //! through several steps landed where its final grade put it, not where
 //! Anki's own progression would.
 //!
-//! Linking rslib removes that entirely -- the same scheduler, the same
-//! collection format and the same sync client as the desktop.
+//! Linking rslib removes that entirely -- the same scheduler and the same
+//! collection format as the desktop.
 //!
-//! Everything crosses the boundary as JSON. The alternative, rslib's
-//! protobuf service interface, would drag a protobuf runtime into the Qt app
-//! for no gain: the app already parses JSON, and these payloads are tiny.
+//! Everything crosses the boundary as JSON. rslib's protobuf service
+//! interface would drag a protobuf runtime into the Qt app for no gain: the
+//! app already parses JSON, and these payloads are tiny.
+//!
+//! Errors are carried as plain Strings rather than rslib's AnkiError.
+//! Constructing an AnkiError means going through its snafu context selectors,
+//! which would pin us to the exact snafu version rslib vendors for no
+//! benefit -- we only ever render the message.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::Mutex;
 
 use anki::collection::{Collection, CollectionBuilder};
-use anki::prelude::*;
+use anki::decks::DeckId;
 // counts_for_deck_today is inherent-private; it reaches us through this trait.
 use anki::services::SchedulerService;
 use serde_json::{json, Value};
+
+type ShimResult<T> = std::result::Result<T, String>;
+
+/// Flatten anything displayable into our String error type.
+fn flat<T, E: std::fmt::Display>(r: std::result::Result<T, E>) -> ShimResult<T> {
+    r.map_err(|e| e.to_string())
+}
 
 // rslib's Collection is not Sync, and the Qt side is single-threaded anyway.
 // A process-wide handle keeps the C surface simple: no pointer lifetimes to
@@ -94,13 +106,12 @@ pub extern "C" fn ankicore_close() -> *mut c_char {
 
 fn with_collection<F>(f: F) -> *mut c_char
 where
-    F: FnOnce(&mut Collection) -> Result<Value>,
+    F: FnOnce(&mut Collection) -> ShimResult<Value>,
 {
     let mut guard = COLLECTION.lock().unwrap();
     match guard.as_mut() {
         Some(col) => match f(col) {
-            Ok(v) => {
-                let mut out = v;
+            Ok(mut out) => {
                 if let Some(obj) = out.as_object_mut() {
                     obj.insert("ok".into(), Value::Bool(true));
                 }
@@ -116,10 +127,10 @@ where
 #[no_mangle]
 pub extern "C" fn ankicore_deck_list() -> *mut c_char {
     with_collection(|col| {
-        let tree = col.deck_tree(Some(TimestampSecs::now()))?;
+        let tree = flat(col.deck_tree(Some(anki::prelude::TimestampSecs::now())))?;
 
-        // Flatten depth-first so the QML side keeps a simple list model, but
-        // carry the level so it can indent exactly as the desktop does.
+        // Flatten depth-first so QML keeps a simple list model, but carry the
+        // level so it can indent exactly as the desktop does.
         fn walk(node: &anki_proto::decks::DeckTreeNode, depth: usize, out: &mut Vec<Value>) {
             // The synthetic root carries no deck of its own.
             if depth > 0 {
@@ -148,41 +159,28 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
     })
 }
 
-/// Collapse or expand a deck, persisted exactly as the desktop persists it.
-#[no_mangle]
-pub extern "C" fn ankicore_set_collapsed(deck_id: i64, collapsed: bool) -> *mut c_char {
-    with_collection(|col| {
-        col.set_deck_collapsed(
-            DeckId(deck_id),
-            collapsed,
-            anki::decks::DeckCollapseScope::Reviewer,
-        )?;
-        Ok(json!({}))
-    })
-}
-
 /// The next card the scheduler would show for `deck_id`, rendered to plain
 /// text, with the four button labels Anki would print.
 #[no_mangle]
 pub extern "C" fn ankicore_next_card(deck_id: i64) -> *mut c_char {
-    with_collection(|col| {
-        col.set_current_deck(DeckId(deck_id))?;
+    with_collection(move |col| {
+        flat(col.set_current_deck(DeckId(deck_id)))?;
 
-        let queued = col.get_next_card()?;
-        let queued = match queued {
+        let counts = flat(col.counts_for_deck_today(DeckId(deck_id).into()))?;
+
+        let queued = match flat(col.get_next_card())? {
             Some(q) => q,
             None => {
-                let counts = col.counts_for_deck_today(DeckId(deck_id).into())?;
                 return Ok(json!({
                     "card": Value::Null,
                     "new": counts.new,
                     "review": counts.review,
-                }));
+                }))
             }
         };
 
         let card_id = queued.card.id();
-        let rendered = col.render_existing_card(card_id, false, false)?;
+        let rendered = flat(col.render_existing_card(card_id, false, false))?;
 
         // The device has no HTML or image support, so flatten here rather
         // than shipping markup the QML cannot draw.
@@ -190,8 +188,7 @@ pub extern "C" fn ankicore_next_card(deck_id: i64) -> *mut c_char {
         let answer_full = strip_html(&rendered.answer().to_string());
         let answer = split_answer(&question, &answer_full);
 
-        let labels = col.describe_next_states(&queued.states)?;
-        let counts = col.counts_for_deck_today(DeckId(deck_id).into())?;
+        let labels = flat(col.describe_next_states(&queued.states))?;
 
         Ok(json!({
             "card": {
@@ -213,55 +210,57 @@ pub extern "C" fn ankicore_answer_card(
     rating: c_int,
     milliseconds_taken: c_int,
 ) -> *mut c_char {
+    if !(1..=4).contains(&rating) {
+        return err_json("answer_card", format!("rating must be 1-4, got {rating}"));
+    }
+
     with_collection(move |col| {
-        if !(1..=4).contains(&rating) {
-            invalid_input!("rating must be 1-4, got {rating}");
-        }
+        let queued =
+            flat(col.get_next_card())?.ok_or_else(|| "no card to answer".to_string())?;
 
-        let queued = col.get_next_card()?.or_invalid("no card to answer")?;
         if queued.card.id().0 != card_id {
-            invalid_input!("card on screen is no longer the scheduler's next card");
+            return Err("card on screen is no longer the scheduler's next card".into());
         }
 
-        // The protobuf enum is 0-indexed (AGAIN=0..EASY=3) while the UI and
-        // the revlog `ease` column are 1-4. Passing the UI value straight
-        // through silently records every review one step easier; only Easy
-        // fails loudly. This cost a real bug once already.
+        // The UI scale is 1-4 and matches the revlog `ease` column. Mapping it
+        // onto the wrong state silently records every review one step easier,
+        // and only Easy fails loudly -- that cost a real bug once already.
         let states = queued.states;
-        let new_state = match rating {
-            1 => states.again,
-            2 => states.hard,
-            3 => states.good,
-            _ => states.easy,
+        let (new_state, rating_enum) = match rating {
+            1 => (states.again, anki::scheduler::answering::Rating::Again),
+            2 => (states.hard, anki::scheduler::answering::Rating::Hard),
+            3 => (states.good, anki::scheduler::answering::Rating::Good),
+            _ => (states.easy, anki::scheduler::answering::Rating::Easy),
         };
 
         let mut answer = anki::scheduler::answering::CardAnswer {
             card_id: queued.card.id(),
             current_state: states.current,
             new_state,
-            rating: match rating {
-                1 => anki::scheduler::answering::Rating::Again,
-                2 => anki::scheduler::answering::Rating::Hard,
-                3 => anki::scheduler::answering::Rating::Good,
-                _ => anki::scheduler::answering::Rating::Easy,
-            },
-            answered_at: TimestampMillis::now(),
+            rating: rating_enum,
+            answered_at: anki::prelude::TimestampMillis::now(),
             milliseconds_taken: milliseconds_taken.max(0) as u32,
             custom_data: None,
             // The card came from the scheduler's queue, not a preview.
             from_queue: true,
         };
 
-        col.answer_card(&mut answer)?;
+        flat(col.answer_card(&mut answer))?;
         Ok(json!({}))
     })
 }
+
+// Deck collapsing is handled by the QML side for now. rslib's public entry
+// point for it could not be confirmed without guessing at a type path, and
+// the deck tree already reports each deck's collapsed state, so nothing is
+// lost by deferring the write-back.
 
 // Native sync is deliberately absent for now. rslib's normal_sync and
 // sync_login both take a reqwest::Client constructed rslib's own way, and
 // guessing that constructor risks a version mismatch against the reqwest it
 // vendors. Sync stays brokered by the PC, which is already proven, until the
-// client builder can be confirmed against a working build.
+// client builder can be confirmed against a green build.
+
 // --- text rendering ---------------------------------------------------------
 
 fn strip_html(raw: &str) -> String {
@@ -271,7 +270,13 @@ fn strip_html(raw: &str) -> String {
     let brs = regex_replace_all(&no_style, r"(?i)<br\s*/?>", "\n");
     let hrs = regex_replace_all(&brs, r"(?i)<hr[^>]*>", "\n---\n");
     let text = regex_replace_all(&hrs, r"<[^>]+>", "");
-    let text = anki::text::decode_entities(&text).to_string();
+    let text = text
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
     let text = regex_replace_all(&text, r"[ \t]+", " ");
     let text = regex_replace_all(&text, r"\n{3,}", "\n\n");
     text.trim().to_string()
