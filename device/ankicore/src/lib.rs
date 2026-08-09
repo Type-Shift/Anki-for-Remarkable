@@ -146,10 +146,12 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
                     "due": node.new_count + node.learn_count + node.review_count,
                 }));
             }
-            if depth == 0 || !node.collapsed {
-                for child in &node.children {
-                    walk(child, depth + 1, out);
-                }
+            // Always recurse. Pruning collapsed branches here would make the
+            // tree unexpandable on the device, since collapse state cannot be
+            // written back yet. The caller hides children instead, seeded
+            // from each node's own collapsed flag.
+            for child in &node.children {
+                walk(child, depth + 1, out);
             }
         }
 

@@ -1,79 +1,90 @@
 #include "offlineclient.h"
 
-#include <QDateTime>
 #include <QDebug>
-#include <QDir>
 #include <QFile>
-#include <QFileSystemWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSaveFile>
-#include <QTimer>
 #include <QVariantMap>
 
+#include "ankicore.h"
+
 namespace {
-constexpr int  QUEUE_VERSION = 1;
-const char    *BATCH_FILE    = "anki-batch.json";
-const char    *QUEUE_FILE    = "anki-queue.json";
+// Pushed by pc/collection.ps1. Not derived from QDir::homePath(): systemd
+// services inherit no HOME, so that resolves to "/" and the app hunts for the
+// collection in the wrong place. Fine over SSH, broken under the launcher.
+const char *COLLECTION_PATH = "/home/root/collection.anki2";
 }
 
 OfflineAnkiClient::OfflineAnkiClient(QObject *parent)
     : QObject(parent)
+    , m_collectionPath(QString::fromLatin1(COLLECTION_PATH))
 {
-    // Do NOT use QDir::homePath(): systemd services inherit no HOME, so it
-    // resolves to "/" and the app hunts for /anki-batch.json while the batch
-    // sits unread in /home/root. Fine over SSH, broken under the launcher.
-    // On a reMarkable this is always root's home; the env var is an escape
-    // hatch for testing.
-    QString home = qEnvironmentVariable("RMANKI_HOME");
-    if (home.isEmpty())
-        home = QStringLiteral("/home/root");
-
-    m_batchPath = home + QLatin1Char('/') + QLatin1String(BATCH_FILE);
-    m_queuePath = home + QLatin1Char('/') + QLatin1String(QUEUE_FILE);
-
-    // Watch for the PC pushing a new batch. The directory is watched as well
-    // as the file: scp replaces the file, which can drop a file-only watch.
-    m_watcher = new QFileSystemWatcher(this);
-    m_watcher->addPath(home);
-    if (QFile::exists(m_batchPath))
-        m_watcher->addPath(m_batchPath);
-
-    m_reloadDebounce = new QTimer(this);
-    m_reloadDebounce->setSingleShot(true);
-    m_reloadDebounce->setInterval(1200);      // let the copy finish landing
-    connect(m_reloadDebounce, &QTimer::timeout, this, &OfflineAnkiClient::checkForNewCards);
-
-    connect(m_watcher, &QFileSystemWatcher::fileChanged,
-            this, &OfflineAnkiClient::onBatchPathChanged);
-    connect(m_watcher, &QFileSystemWatcher::directoryChanged,
-            this, &OfflineAnkiClient::onBatchPathChanged);
-
-    // Populate deck counts and batchInfo, then sit on the home screen. The
-    // launcher starts this app at boot, so the first thing the user sees must
-    // be a choice between Anki and the stock notes UI -- not a forced app.
-    loadDecks();
+    if (openCollection()) {
+        loadDecks();
+    }
+    // The launcher shows first either way, so a missing collection surfaces
+    // as a message on the home screen rather than an empty deck list.
     setCurrentState(QStringLiteral("HOME"));
 }
 
-void OfflineAnkiClient::onBatchPathChanged()
+OfflineAnkiClient::~OfflineAnkiClient()
 {
-    // Never yank the card out from under someone mid-review.
-    if (m_currentState == QLatin1String("STUDY")) return;
-    m_reloadDebounce->start();
+    if (m_collectionOpen) {
+        // Flush to disk, or the last few answers exist only in the WAL.
+        char *r = ankicore_close();
+        if (r) ankicore_free_string(r);
+    }
 }
 
-void OfflineAnkiClient::checkForNewCards()
-{
-    // A replaced file loses its watch entry; re-add it.
-    if (QFile::exists(m_batchPath) && !m_watcher->files().contains(m_batchPath))
-        m_watcher->addPath(m_batchPath);
+// --- plumbing ---------------------------------------------------------------
 
-    loadDecks();
+QVariantMap OfflineAnkiClient::call(char *rawJson, const QString &context)
+{
+    if (!rawJson) {
+        setError(QStringLiteral("%1: the Anki backend returned nothing").arg(context));
+        return {};
+    }
+
+    const QByteArray payload(rawJson);
+    ankicore_free_string(rawJson);
+
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+    if (doc.isNull() || !doc.isObject()) {
+        setError(QStringLiteral("%1: could not read the backend's reply (%2)")
+                     .arg(context, parseError.errorString()));
+        return {};
+    }
+
+    const QJsonObject obj = doc.object();
+    if (!obj.value(QStringLiteral("ok")).toBool(false)) {
+        setError(QStringLiteral("%1: %2")
+                     .arg(context, obj.value(QStringLiteral("error"))
+                                       .toString(QStringLiteral("unknown error"))));
+        return {};
+    }
+
+    return obj.toVariantMap();
 }
 
-// --- state helpers ----------------------------------------------------------
+bool OfflineAnkiClient::openCollection()
+{
+    if (!QFile::exists(m_collectionPath)) {
+        setError(QStringLiteral(
+            "No collection on the device yet.\n\n"
+            "Run collection.ps1 push on your computer to copy it across."));
+        return false;
+    }
+
+    const QVariantMap r = call(ankicore_open(m_collectionPath.toUtf8().constData()),
+                               QStringLiteral("Opening collection"));
+    if (r.isEmpty()) return false;
+
+    m_collectionOpen = true;
+    clearError();
+    return true;
+}
 
 void OfflineAnkiClient::setCurrentState(const QString &s)
 {
@@ -91,284 +102,118 @@ void OfflineAnkiClient::setStatusMessage(const QString &s)
 
 void OfflineAnkiClient::setError(const QString &msg)
 {
-    m_errorMessage = msg;
+    if (m_errorMessage != msg) {
+        m_errorMessage = msg;
+        emit errorMessageChanged();
+    }
+    qWarning().noquote() << "anki:" << msg;
+}
+
+void OfflineAnkiClient::clearError()
+{
+    // Without this a single early failure sticks forever: a later success
+    // advances the state but the home screen keeps reading errorMessage.
+    if (m_errorMessage.isEmpty()) return;
+    m_errorMessage.clear();
     emit errorMessageChanged();
-    setCurrentState(QStringLiteral("ERROR"));
 }
 
-// --- loading ----------------------------------------------------------------
+// --- decks ------------------------------------------------------------------
 
-bool OfflineAnkiClient::loadBatch()
+void OfflineAnkiClient::loadDecks()
 {
-    QFile f(m_batchPath);
-    if (!f.exists()) {
-        setError(QStringLiteral(
-            "No cards on the device yet.\n\n"
-            "Export a batch from the PC:\n"
-            "  rmanki.py export --out anki-batch.json\n"
-            "then copy it to %1").arg(m_batchPath));
-        return false;
-    }
-    if (!f.open(QIODevice::ReadOnly)) {
-        setError(QStringLiteral("Cannot read %1: %2").arg(m_batchPath, f.errorString()));
-        return false;
+    if (!m_collectionOpen && !openCollection()) {
+        setCurrentState(QStringLiteral("ERROR"));
+        return;
     }
 
-    QJsonParseError perr{};
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &perr);
-    f.close();
+    setStatusMessage(QStringLiteral("Reading decks..."));
 
-    if (perr.error != QJsonParseError::NoError || !doc.isObject()) {
-        setError(QStringLiteral("Batch file is corrupt: %1").arg(perr.errorString()));
-        return false;
+    const QVariantMap r = call(ankicore_deck_list(), QStringLiteral("Loading decks"));
+    if (r.isEmpty()) {
+        setCurrentState(QStringLiteral("ERROR"));
+        return;
     }
 
-    const QJsonObject root = doc.object();
-    m_batchDeckName = root.value(QStringLiteral("deck")).toString(QStringLiteral("Offline"));
-    m_batchExportedAt = static_cast<qint64>(root.value(QStringLiteral("exported_at")).toDouble());
+    const bool firstLoad = m_deckNodes.isEmpty();
+    m_deckNodes.clear();
 
-    m_cards.clear();
-    const QJsonArray arr = root.value(QStringLiteral("cards")).toArray();
-    for (const QJsonValue &v : arr) {
-        const QJsonObject o = v.toObject();
-        OfflineCard c;
-        // Card ids exceed 2^31, so they must be read as doubles and cast,
-        // not toInt().
-        c.cardId    = static_cast<qint64>(o.value(QStringLiteral("card_id")).toDouble());
-        c.deck      = o.value(QStringLiteral("deck")).toString(m_batchDeckName);
-        c.question  = o.value(QStringLiteral("question")).toString();
-        c.answer    = o.value(QStringLiteral("answer")).toString();
-        c.statesB64 = o.value(QStringLiteral("states_b64")).toString();
-        for (const QJsonValue &b : o.value(QStringLiteral("buttons")).toArray())
-            c.buttons << b.toString();
-        if (c.cardId != 0)
-            m_cards.append(c);
+    const QVariantList decks = r.value(QStringLiteral("decks")).toList();
+    int totalDue = 0;
+    for (const QVariant &v : decks) {
+        const QVariantMap d = v.toMap();
+        DeckNode n;
+        n.id          = d.value(QStringLiteral("id")).toLongLong();
+        n.name        = d.value(QStringLiteral("name")).toString();
+        n.level       = d.value(QStringLiteral("level")).toInt();
+        n.hasChildren = d.value(QStringLiteral("has_children")).toBool();
+        n.newC        = d.value(QStringLiteral("new")).toInt();
+        n.learnC      = d.value(QStringLiteral("learn")).toInt();
+        n.reviewC     = d.value(QStringLiteral("review")).toInt();
+        n.due         = d.value(QStringLiteral("due")).toInt();
+        m_deckNodes.append(n);
+
+        if (n.level == 0) totalDue += n.due;   // top level already includes children
+
+        // Seed collapse from what Anki itself has stored, once. After that the
+        // user's taps win, since collapse cannot be written back yet.
+        if (firstLoad && d.value(QStringLiteral("collapsed")).toBool())
+            m_collapsed.insert(n.name);
     }
 
-    if (m_cards.isEmpty()) {
-        setError(QStringLiteral("The batch file contains no cards."));
-        return false;
-    }
-    return true;
-}
+    m_currentTotal = totalDue;
+    emit currentTotalChanged();
 
-bool OfflineAnkiClient::loadExistingQueue()
-{
-    m_answeredIds.clear();
-    m_queuedAnswers.clear();
+    m_batchInfo = QStringLiteral("Scheduled by Anki %1")
+                      .arg(QStringLiteral("25.09"));
+    emit batchInfoChanged();
 
-    QFile f(m_queuePath);
-    if (!f.exists()) return true;          // nothing reviewed yet
-    if (!f.open(QIODevice::ReadOnly)) {
-        qWarning() << "cannot read queue:" << f.errorString();
-        return false;
-    }
+    clearError();
+    rebuildDeckData();
 
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    f.close();
-    if (!doc.isObject()) return false;
-
-    for (const QJsonValue &v : doc.object().value(QStringLiteral("answers")).toArray()) {
-        const QJsonObject o = v.toObject();
-        const qint64 cid = static_cast<qint64>(o.value(QStringLiteral("card_id")).toDouble());
-        if (cid == 0) continue;
-        m_answeredIds.insert(cid);
-        m_queuedAnswers.append(o.toVariantMap());
-    }
-    return true;
-}
-
-bool OfflineAnkiClient::persistQueue()
-{
-    QJsonArray answers;
-    for (const QVariant &v : m_queuedAnswers)
-        answers.append(QJsonObject::fromVariantMap(v.toMap()));
-
-    QJsonObject root;
-    root.insert(QStringLiteral("version"), QUEUE_VERSION);
-    root.insert(QStringLiteral("answers"), answers);
-
-    // QSaveFile writes to a temp file and renames, so a crash or a battery
-    // death mid-write cannot leave a truncated queue. commit() fsyncs.
-    QSaveFile out(m_queuePath);
-    if (!out.open(QIODevice::WriteOnly)) {
-        qWarning() << "cannot open queue for write:" << out.errorString();
-        return false;
-    }
-    out.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    if (!out.commit()) {
-        qWarning() << "queue commit failed:" << out.errorString();
-        return false;
-    }
-    return true;
-}
-
-// --- deck list --------------------------------------------------------------
-
-int OfflineAnkiClient::pendingCount() const
-{
-    int n = 0;
-    for (const OfflineCard &c : m_cards)
-        if (!m_answeredIds.contains(c.cardId)) ++n;
-    return n;
-}
-
-QStringList OfflineAnkiClient::deckNames() const
-{
-    QSet<QString> all;
-    for (const OfflineCard &c : m_cards) {
-        if (m_answeredIds.contains(c.cardId)) continue;
-
-        // Insert every ancestor, not just the card's own deck. Decks like
-        // "Eng" and "French" hold no cards themselves -- everything lives in
-        // subdecks -- so without this they never appeared as rows and there
-        // was nothing to tap to collapse them.
-        const QStringList parts = c.deck.split(QStringLiteral("::"));
-        QString path;
-        for (const QString &part : parts) {
-            path = path.isEmpty() ? part : path + QStringLiteral("::") + part;
-            all.insert(path);
-        }
-    }
-
-    QStringList names = all.values();
-    names.sort();
-    return names;
-}
-
-int OfflineAnkiClient::pendingInDeck(const QString &deck) const
-{
-    // Counts subdecks too, so a parent row shows the total beneath it --
-    // matching what tapping that row will actually study.
-    int n = 0;
-    for (const OfflineCard &c : m_cards) {
-        if (m_answeredIds.contains(c.cardId)) continue;
-        if (c.deck == deck || c.deck.startsWith(deck + QStringLiteral("::"))) ++n;
-    }
-    return n;
+    setCurrentState(totalDue > 0 ? QStringLiteral("DECKS")
+                                 : QStringLiteral("DONE"));
 }
 
 void OfflineAnkiClient::rebuildDeckData()
 {
     m_deckData.clear();
-    m_visibleDecks.clear();
+    m_visibleDeckIds.clear();
+    m_visibleDeckNames.clear();
 
-    const QStringList names = deckNames();
-
-    // Anki deck names are "Parent::Child"; indent by depth and let a parent
-    // collapse its children, matching how the deck list behaves on desktop.
-    for (const QString &name : names) {
-        const QStringList parts = name.split(QStringLiteral("::"));
-        const int depth = parts.size() - 1;
-
-        bool hiddenByParent = false;
-        for (const QString &collapsed : m_collapsedDecks) {
-            if (name != collapsed && name.startsWith(collapsed + QStringLiteral("::"))) {
-                hiddenByParent = true;
+    for (const DeckNode &n : m_deckNodes) {
+        // Hide anything beneath a collapsed ancestor.
+        bool hidden = false;
+        for (const QString &c : m_collapsed) {
+            if (n.name != c && n.name.startsWith(c + QStringLiteral("::"))) {
+                hidden = true;
                 break;
             }
         }
-        if (hiddenByParent) continue;
-
-        bool hasChildren = false;
-        for (const QString &other : names) {
-            if (other.startsWith(name + QStringLiteral("::"))) { hasChildren = true; break; }
-        }
+        if (hidden) continue;
 
         QVariantMap deck;
-        deck.insert(QStringLiteral("title"),       parts.last());
+        deck.insert(QStringLiteral("title"),       n.name.split(QStringLiteral("::")).last());
         deck.insert(QStringLiteral("visible"),     true);
-        deck.insert(QStringLiteral("indent"),      depth);
-        deck.insert(QStringLiteral("hasChildren"), hasChildren);
-        deck.insert(QStringLiteral("collapsed"),   m_collapsedDecks.contains(name));
-        // The PC applied deck limits when building the batch, so every
-        // pending card is simply "due" from the tablet's point of view.
-        deck.insert(QStringLiteral("newC"),   0);
-        deck.insert(QStringLiteral("learnC"), 0);
-        deck.insert(QStringLiteral("dueC"),   pendingInDeck(name));
+        deck.insert(QStringLiteral("indent"),      n.level);
+        deck.insert(QStringLiteral("hasChildren"), n.hasChildren);
+        deck.insert(QStringLiteral("collapsed"),   m_collapsed.contains(n.name));
+        deck.insert(QStringLiteral("newC"),        n.newC);
+        deck.insert(QStringLiteral("learnC"),      n.learnC);
+        deck.insert(QStringLiteral("dueC"),        n.reviewC);
         m_deckData.append(deck);
-        m_visibleDecks << name;
+        m_visibleDeckIds.append(n.id);
+        m_visibleDeckNames.append(n.name);
     }
     emit deckDataChanged();
 }
 
-void OfflineAnkiClient::loadDecks()
-{
-    setCurrentState(QStringLiteral("LOADING"));
-    setStatusMessage(QStringLiteral("Reading cards..."));
-
-    // Returning to the deck list means no single deck is being studied.
-    m_activeDeck.clear();
-
-    if (!loadBatch()) return;      // loadBatch() already set the error state
-    loadExistingQueue();
-
-    // Clear any stale failure. Without this, one early error (say the batch
-    // had not arrived yet at boot) stuck forever: the reload succeeded and
-    // the state advanced, but the home screen kept reading errorMessage and
-    // insisting there were no cards.
-    if (!m_errorMessage.isEmpty()) {
-        m_errorMessage.clear();
-        emit errorMessageChanged();
-    }
-
-    // Start with every parent collapsed, so 57 decks open as a short list of
-    // subjects rather than a wall of subdecks. Done once, so the user's own
-    // expand/collapse choices survive a batch reload.
-    if (!m_collapseInitialised) {
-        m_collapseInitialised = true;
-        const QStringList names = deckNames();
-        for (const QString &name : names) {
-            for (const QString &other : names) {
-                if (other.startsWith(name + QStringLiteral("::"))) {
-                    m_collapsedDecks.insert(name);
-                    break;
-                }
-            }
-        }
-    }
-
-    m_cardsReviewed = m_answeredIds.size();
-    emit cardsReviewedChanged();
-
-    m_currentTotal = m_cards.size();
-    emit currentTotalChanged();
-
-    m_currentRemaining = pendingCount();
-    emit currentRemainingChanged();
-
-    emit pendingAnswersChanged();
-
-    QString when = QStringLiteral("unknown time");
-    if (m_batchExportedAt > 0) {
-        when = QDateTime::fromSecsSinceEpoch(m_batchExportedAt)
-                   .toString(QStringLiteral("d MMM, HH:mm"));
-    }
-    m_batchInfo = QStringLiteral("%1 card(s) sent from your PC on %2")
-                      .arg(m_cards.size()).arg(when);
-    emit batchInfoChanged();
-
-    rebuildDeckData();
-
-    if (m_currentRemaining == 0) {
-        setCurrentState(QStringLiteral("DONE"));
-        return;
-    }
-    setCurrentState(QStringLiteral("DECKS"));
-}
-
-void OfflineAnkiClient::goHome()
-{
-    m_activeDeck.clear();
-    setCurrentState(QStringLiteral("HOME"));
-}
-
 void OfflineAnkiClient::toggleDeck(int index)
 {
-    if (index < 0 || index >= m_visibleDecks.size()) return;
-    const QString name = m_visibleDecks.at(index);
-    if (m_collapsedDecks.contains(name)) m_collapsedDecks.remove(name);
-    else                                 m_collapsedDecks.insert(name);
+    if (index < 0 || index >= m_visibleDeckNames.size()) return;
+    const QString name = m_visibleDeckNames.at(index);
+    if (m_collapsed.contains(name)) m_collapsed.remove(name);
+    else                            m_collapsed.insert(name);
     rebuildDeckData();
 }
 
@@ -376,128 +221,52 @@ void OfflineAnkiClient::toggleDeck(int index)
 
 void OfflineAnkiClient::startStudy(int index)
 {
-    if (index < 0 || index >= m_visibleDecks.size()) return;
+    if (index < 0 || index >= m_visibleDeckIds.size()) return;
 
-    // Tapping a parent deck studies it and everything beneath it, as on desktop.
-    m_activeDeck = m_visibleDecks.at(index);
-
-    m_currentDeckName = m_activeDeck.split(QStringLiteral("::")).last();
+    m_currentDeckId = m_visibleDeckIds.at(index);
+    m_currentDeckName = m_visibleDeckNames.at(index).split(QStringLiteral("::")).last();
     emit currentDeckNameChanged();
 
-    m_currentTotal = pendingInDeck(m_activeDeck);
-    emit currentTotalChanged();
+    m_cardsReviewed = 0;
+    emit cardsReviewedChanged();
 
-    buildSessionQueue();
     showNextCard();
-}
-
-int OfflineAnkiClient::labelToMinutes(const QString &label)
-{
-    // Anki's own button labels: "<1m", "10m", "3d", "2mo", "1.2y".
-    // "mo" must be tested before "m", or every month-long interval would read
-    // as minutes and the card would never leave the session.
-    QString l = label.trimmed().toLower();
-    if (l.isEmpty()) return -1;
-    l.remove(QLatin1Char('<'));
-    l.remove(QLatin1Char('~'));
-
-    if (l.endsWith(QLatin1String("mo")) || l.endsWith(QLatin1Char('y')) ||
-        l.endsWith(QLatin1Char('d')))
-        return -1;                                   // a day or more: done today
-
-    const QString number = l.left(l.size() - 1);
-    bool ok = false;
-    const double value = number.toDouble(&ok);
-    if (!ok) return -1;
-
-    if (l.endsWith(QLatin1Char('s'))) return 1;      // round sub-minute up to 1
-    if (l.endsWith(QLatin1Char('m'))) return qMax(1, int(value));
-    if (l.endsWith(QLatin1Char('h'))) return qMax(1, int(value * 60));
-    return -1;
-}
-
-void OfflineAnkiClient::buildSessionQueue()
-{
-    // Only the not-yet-seen cards. Learning cards live in m_learningDue and
-    // deliberately survive leaving and re-entering a deck.
-    m_sessionQueue.clear();
-    for (int i = 0; i < m_cards.size(); ++i) {
-        if (m_answeredIds.contains(m_cards[i].cardId)) continue;
-        if (m_learningDue.contains(i)) continue;
-        if (!inActiveDeck(m_cards[i])) continue;
-        m_sessionQueue.append(i);
-    }
-}
-
-int OfflineAnkiClient::nextCardIndex()
-{
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-
-    // 1. A learning card that is actually due wins, as in Anki.
-    int soonest = -1;
-    qint64 soonestDue = 0;
-    for (auto it = m_learningDue.constBegin(); it != m_learningDue.constEnd(); ++it) {
-        if (!inActiveDeck(m_cards[it.key()])) continue;
-        if (soonest < 0 || it.value() < soonestDue) {
-            soonest = it.key();
-            soonestDue = it.value();
-        }
-    }
-    if (soonest >= 0 && soonestDue <= now) return soonest;
-
-    // 2. Otherwise show something new while the learning card matures.
-    while (!m_sessionQueue.isEmpty()) {
-        const int idx = m_sessionQueue.first();
-        if (m_answeredIds.contains(m_cards[idx].cardId) || !inActiveDeck(m_cards[idx])) {
-            m_sessionQueue.removeFirst();
-            continue;
-        }
-        return idx;
-    }
-
-    // 3. Nothing new left: show the earliest learning card even if its step
-    //    has not elapsed. Waiting on a timer would strand the user staring at
-    //    a finished screen with cards still owed.
-    return soonest;
-}
-
-bool OfflineAnkiClient::inActiveDeck(const OfflineCard &c) const
-{
-    if (m_activeDeck.isEmpty()) return true;
-    return c.deck == m_activeDeck ||
-           c.deck.startsWith(m_activeDeck + QStringLiteral("::"));
 }
 
 void OfflineAnkiClient::showNextCard()
 {
-    m_currentIndex = nextCardIndex();
+    const QVariantMap r = call(ankicore_next_card(m_currentDeckId),
+                               QStringLiteral("Fetching next card"));
+    if (r.isEmpty()) {
+        setCurrentState(QStringLiteral("ERROR"));
+        return;
+    }
 
-    if (m_currentIndex < 0) {
+    const QVariant cardValue = r.value(QStringLiteral("card"));
+    if (!cardValue.isValid() || cardValue.isNull()) {
+        m_currentCardId = 0;
         m_currentRemaining = 0;
         emit currentRemainingChanged();
         setCurrentState(QStringLiteral("DONE"));
         return;
     }
 
-    const OfflineCard &c = m_cards[m_currentIndex];
+    const QVariantMap card = cardValue.toMap();
+    m_currentCardId = card.value(QStringLiteral("id")).toLongLong();
 
-    m_currentFront = c.question;
+    m_currentFront = card.value(QStringLiteral("question")).toString();
     emit currentFrontChanged();
 
-    m_currentBack = c.answer;
+    m_currentBack = card.value(QStringLiteral("answer")).toString();
     emit currentBackChanged();
 
-    m_currentButtonLabels = c.buttons;
+    m_currentButtonLabels = card.value(QStringLiteral("buttons")).toStringList();
     emit currentButtonLabelsChanged();
 
-    // Everything still owed in this sitting: untouched cards plus those
-    // mid-learning. Counting only untouched cards was why the number dropped
-    // as soon as a card was answered, even though it was coming back.
-    int learningHere = 0;
-    for (auto it = m_learningDue.constBegin(); it != m_learningDue.constEnd(); ++it)
-        if (inActiveDeck(m_cards[it.key()])) ++learningHere;
-
-    m_currentRemaining = m_sessionQueue.size() + learningHere;
+    // Anki's own remaining counts, so the number matches the desktop rather
+    // than a local tally.
+    m_currentRemaining = r.value(QStringLiteral("new")).toInt()
+                       + r.value(QStringLiteral("review")).toInt();
     emit currentRemainingChanged();
 
     m_cardTimer.start();
@@ -506,75 +275,45 @@ void OfflineAnkiClient::showNextCard()
 
 void OfflineAnkiClient::answerCard(int button)
 {
-    if (m_currentIndex < 0 || m_currentIndex >= m_cards.size()) return;
     if (button < 1 || button > 4) return;
+    if (m_currentCardId == 0) return;
 
-    const int cardIndex = m_currentIndex;
-    const OfflineCard &c = m_cards[cardIndex];
+    const int taken = m_cardTimer.isValid()
+                      ? int(qMin<qint64>(m_cardTimer.elapsed(), 600000)) : 0;
 
-    const QString label = (button - 1) < c.buttons.size()
-                          ? c.buttons.at(button - 1) : QString();
-    const int minutes = labelToMinutes(label);
-    const bool comesBack = minutes > 0;
-
-    QVariantMap entry;
-    entry.insert(QStringLiteral("card_id"),     c.cardId);
-    entry.insert(QStringLiteral("rating"),      button);
-    entry.insert(QStringLiteral("answered_at"), QDateTime::currentSecsSinceEpoch());
-    entry.insert(QStringLiteral("time_taken_ms"),
-                 m_cardTimer.isValid() ? qMin<qint64>(m_cardTimer.elapsed(), 600000) : 0);
-    entry.insert(QStringLiteral("states_b64"),  c.statesB64);
-
-    // Keep only the latest answer per card. The scheduling states in the
-    // batch were captured once, so the PC can apply a given card exactly
-    // once -- a second answer would be rejected as stale. Sending the final
-    // grade means the card lands where the user left it.
-    const QVariantList previous = m_queuedAnswers;
-    for (int i = m_queuedAnswers.size() - 1; i >= 0; --i) {
-        if (m_queuedAnswers.at(i).toMap()
-                .value(QStringLiteral("card_id")).toLongLong() == c.cardId) {
-            m_queuedAnswers.removeAt(i);
-        }
-    }
-    m_queuedAnswers.append(entry);
-
-    const bool wasAnswered = m_answeredIds.contains(c.cardId);
-    if (!comesBack) m_answeredIds.insert(c.cardId);
-
-    // Persist before advancing. RmAnki's failure mode was losing reviews
-    // silently; here the answer is on disk before the UI moves on, and a
-    // write failure is surfaced rather than logged and forgotten.
-    if (!persistQueue()) {
-        m_queuedAnswers = previous;
-        if (!wasAnswered) m_answeredIds.remove(c.cardId);
-        setError(QStringLiteral(
-            "Could not save your answer to %1.\n\n"
-            "Nothing has been lost, but reviewing cannot continue safely "
-            "until the device has free space.").arg(m_queuePath));
+    // rslib writes the review straight into the collection: the scheduling
+    // states and the revlog entry are Anki's own, not a queued approximation
+    // to be reconciled later.
+    const QVariantMap r = call(ankicore_answer_card(m_currentCardId, button, taken),
+                               QStringLiteral("Answering card"));
+    if (r.isEmpty()) {
+        setCurrentState(QStringLiteral("ERROR"));
         return;
     }
 
-    m_cardsReviewed = m_answeredIds.size();
+    ++m_cardsReviewed;
     emit cardsReviewedChanged();
-    emit pendingAnswersChanged();
-
-    m_sessionQueue.removeAll(cardIndex);
-    if (comesBack) {
-        // Due when Anki's own label says, so a "<1m" card returns before a
-        // "10m" one instead of both going to the back of a flat queue.
-        m_learningDue.insert(cardIndex,
-                             QDateTime::currentMSecsSinceEpoch() + qint64(minutes) * 60000);
-    } else {
-        m_learningDue.remove(cardIndex);
-    }
 
     showNextCard();
+}
+
+// --- navigation -------------------------------------------------------------
+
+void OfflineAnkiClient::goHome()
+{
+    m_currentDeckId = 0;
+    m_currentCardId = 0;
+    setCurrentState(QStringLiteral("HOME"));
+}
+
+void OfflineAnkiClient::checkForNewCards()
+{
+    loadDecks();
 }
 
 void OfflineAnkiClient::login(const QString &email, const QString &password)
 {
     Q_UNUSED(email)
     Q_UNUSED(password)
-    // Nothing to authenticate against offline; go straight to the cards.
-    loadDecks();
+    // Retained only so the QML binding resolves; there is nothing to log into.
 }

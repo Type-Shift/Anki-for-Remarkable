@@ -26,24 +26,26 @@ qt_add_qml_module(anki
 
 target_link_libraries(anki PRIVATE Qt6::Quick)
 
-if(ANKICORE_LIB)
-    if(NOT EXISTS "${ANKICORE_LIB}")
-        message(FATAL_ERROR "ANKICORE_LIB set to '${ANKICORE_LIB}' but no such file")
-    endif()
-    message(STATUS "Linking Anki backend: ${ANKICORE_LIB}")
-
-    # A Rust staticlib brings its own runtime, which needs the usual system
-    # libraries. Without these the link fails on undefined pthread/dlopen
-    # symbols rather than anything that points at Rust.
-    target_link_libraries(anki PRIVATE
-        "${ANKICORE_LIB}"
-        pthread
-        dl
-        m
-        rt)
-    target_compile_definitions(anki PRIVATE HAVE_ANKICORE=1)
-else()
-    message(WARNING
-        "ANKICORE_LIB not set: building WITHOUT Anki's scheduler. "
-        "The app will fall back to the batch-file backend.")
+# Required, not optional: the app now schedules exclusively through rslib.
+# There is no batch-file fallback left to degrade to, so a missing library
+# must fail the build rather than produce an app with no scheduler.
+if(NOT ANKICORE_LIB)
+    message(FATAL_ERROR
+        "ANKICORE_LIB not set. Build device/ankicore first and pass "
+        "-DANKICORE_LIB=/path/to/libankicore.a")
 endif()
+if(NOT EXISTS "${ANKICORE_LIB}")
+    message(FATAL_ERROR "ANKICORE_LIB set to '${ANKICORE_LIB}' but no such file")
+endif()
+message(STATUS "Linking Anki backend: ${ANKICORE_LIB}")
+
+# A Rust staticlib brings its own runtime, which needs the usual system
+# libraries. Without these the link fails on undefined pthread/dlopen symbols
+# rather than anything that points at Rust.
+target_link_libraries(anki PRIVATE
+    "${ANKICORE_LIB}"
+    pthread
+    dl
+    m
+    rt)
+target_compile_definitions(anki PRIVATE HAVE_ANKICORE=1)

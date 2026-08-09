@@ -2,34 +2,28 @@
 #define OFFLINECLIENT_H
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
-#include <QVector>
-#include <QSet>
 #include <QElapsedTimer>
-
-class QFileSystemWatcher;
-class QTimer;
 
 // ---------------------------------------------------------------------------
 // OfflineAnkiClient
 //
-// Drop-in replacement for AnkiClient that never touches the network. Cards
-// come from a batch file written by the PC; answers are appended to a queue
-// file the PC drains on reconnect.
+// Adapter between the QML UI and Anki's own Rust backend (see ankicore.h).
 //
-// Exposes exactly the surface Main.qml binds to, so the UI is unchanged.
+// It used to carry a scheduler of sorts: a batch of cards exported by the PC,
+// plus a learning queue driven by parsing Anki's interval labels. That was a
+// good approximation but it could not work out what an interval becomes after
+// a step, so multi-step learning drifted from the desktop.
+//
+// All of that is gone. Deck counts, card selection, rendering and scheduling
+// now come from rslib against a real collection.anki2 on the device, so the
+// tablet and the desktop agree exactly.
+//
+// The QML-facing surface is unchanged, so Main.qml did not have to move.
 // ---------------------------------------------------------------------------
-
-struct OfflineCard {
-    qint64      cardId = 0;
-    QString     deck;
-    QString     question;
-    QString     answer;
-    QStringList buttons;
-    QString     statesB64;   // opaque to us; handed straight back to the PC
-};
 
 class OfflineAnkiClient : public QObject
 {
@@ -46,13 +40,12 @@ class OfflineAnkiClient : public QObject
     Q_PROPERTY(int cardsReviewed       READ cardsReviewed   NOTIFY cardsReviewedChanged)
     Q_PROPERTY(QString statusMessage   READ statusMessage   NOTIFY statusMessageChanged)
     Q_PROPERTY(QString errorMessage    READ errorMessage    NOTIFY errorMessageChanged)
-    // Answers reviewed offline that the PC has not collected yet.
     Q_PROPERTY(int pendingAnswers      READ pendingAnswers  NOTIFY pendingAnswersChanged)
-    // Human-readable description of the batch currently on the device.
     Q_PROPERTY(QString batchInfo       READ batchInfo       NOTIFY batchInfoChanged)
 
 public:
     explicit OfflineAnkiClient(QObject *parent = nullptr);
+    ~OfflineAnkiClient() override;
 
     QString currentState() const { return m_currentState; }
     QVariantList deckData() const { return m_deckData; }
@@ -65,20 +58,16 @@ public:
     int cardsReviewed() const { return m_cardsReviewed; }
     QString statusMessage() const { return m_statusMessage; }
     QString errorMessage() const { return m_errorMessage; }
-    int pendingAnswers() const { return m_queuedAnswers.size(); }
+    // Nothing is queued any more: answers land in the collection immediately.
+    int pendingAnswers() const { return 0; }
     QString batchInfo() const { return m_batchInfo; }
 
-    // Same invokables Main.qml calls. login() is retained only so the QML
-    // binding resolves; there is nothing to log into offline.
     Q_INVOKABLE void login(const QString &email, const QString &password);
     Q_INVOKABLE void loadDecks();
     Q_INVOKABLE void startStudy(int index);
     Q_INVOKABLE void answerCard(int button);
     Q_INVOKABLE void toggleDeck(int index);
-    // Re-read the batch from disk. Safe to call from the finished screen so
-    // the user is never stranded there after the PC pushes new cards.
     Q_INVOKABLE void checkForNewCards();
-    // Back to the launcher chooser.
     Q_INVOKABLE void goHome();
 
 signals:
@@ -96,52 +85,42 @@ signals:
     void pendingAnswersChanged();
     void batchInfoChanged();
 
-private slots:
-    // Fires when the PC pushes a new batch file, so new cards appear without
-    // needing the app restarted.
-    void onBatchPathChanged();
-
 private:
     void setCurrentState(const QString &s);
     void setStatusMessage(const QString &s);
     void setError(const QString &msg);
+    void clearError();
 
-    bool loadBatch();          // read the PC-written batch file
-    bool loadExistingQueue();  // resume: skip cards already answered
-    QStringList deckNames() const;               // decks with cards still pending
-    int  pendingInDeck(const QString &deck) const;
-    bool inActiveDeck(const OfflineCard &c) const;
+    // Calls into ankicore and parses the JSON reply. Returns an empty object
+    // and sets the error state when the call fails.
+    QVariantMap call(char *rawJson, const QString &context);
 
-    // Minutes until Anki would next show this card, from its own button
-    // label ("<1m", "10m", "3d", "2mo"). Returns -1 when the interval is a
-    // day or more, meaning the card is finished for today.
-    static int labelToMinutes(const QString &label);
-
-    void buildSessionQueue();
-    int  nextCardIndex();       // which card to show now, or -1 when done
-    bool persistQueue();       // atomic + fsync; a lost answer is the one
-                               // failure mode this whole project exists to fix
+    bool openCollection();
+    void rebuildDeckData();      // from m_deckNodes plus local collapse state
     void showNextCard();
-    void rebuildDeckData();
-    int  pendingCount() const;
 
-    QString m_batchPath;
-    QString m_queuePath;
+    struct DeckNode {
+        qint64  id = 0;
+        QString name;            // full "Parent::Child" path
+        int     level = 0;
+        bool    hasChildren = false;
+        int     newC = 0;
+        int     learnC = 0;
+        int     reviewC = 0;
+        int     due = 0;
+    };
 
-    QVector<OfflineCard> m_cards;
-    QSet<qint64>         m_answeredIds;
-    QVariantList         m_queuedAnswers;   // serialised straight to JSON
+    QString m_collectionPath;
+    bool    m_collectionOpen = false;
 
-    // Cards not yet seen this sitting, in batch order.
-    QList<int> m_sessionQueue;
+    QList<DeckNode> m_deckNodes;     // full tree, unpruned
+    QSet<QString>   m_collapsed;     // by full deck name, seeded from Anki
+    QList<qint64>   m_visibleDeckIds;// parallel to m_deckData, for invokables
+    QStringList     m_visibleDeckNames;
 
-    // Cards mid-learning: index -> epoch ms when Anki would show it again.
-    // Kept across deck switches, so stepping out of a deck and back does not
-    // discard work in progress or make the counts jump.
-    QHash<int, qint64> m_learningDue;
-
+    qint64 m_currentDeckId = 0;
+    qint64 m_currentCardId = 0;
     QElapsedTimer m_cardTimer;
-    int m_currentIndex = -1;    // card on screen, or -1
 
     QString      m_currentState;
     QVariantList m_deckData;
@@ -154,17 +133,7 @@ private:
     int          m_cardsReviewed    = 0;
     QString      m_statusMessage;
     QString      m_errorMessage;
-
-    QSet<QString> m_collapsedDecks;
-    bool m_collapseInitialised = false;   // parents start collapsed, once
-    QStringList   m_visibleDecks;   // parallel to m_deckData, for startStudy()
-    QString m_activeDeck;           // deck currently being studied
-    QString m_batchDeckName;
-    QString m_batchInfo;
-    qint64  m_batchExportedAt = 0;
-
-    QFileSystemWatcher *m_watcher = nullptr;
-    QTimer *m_reloadDebounce = nullptr;
+    QString      m_batchInfo;
 };
 
 #endif // OFFLINECLIENT_H
