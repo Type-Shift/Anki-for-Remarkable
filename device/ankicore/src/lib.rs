@@ -184,8 +184,13 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
 pub extern "C" fn ankicore_set_collapsed(deck_id: i64, collapsed: bool) -> *mut c_char {
     with_collection(move |col| {
         let did = DeckId(deck_id);
-        let mut deck = flat(col.get_deck(did))?
+        let existing = flat(col.get_deck(did))?
             .ok_or_else(|| format!("no deck with id {deck_id}"))?;
+
+        // get_deck hands back an Arc, which cannot be mutated through. Clone
+        // out of it before editing.
+        let mut deck = (*existing).clone();
+
         // study_collapsed is the reviewer's own flag, which is what this app
         // is: the deck browser keeps a separate one.
         deck.common.study_collapsed = collapsed;
@@ -326,11 +331,17 @@ pub extern "C" fn ankicore_sync_login(
     let password = c_str(password).unwrap_or("").to_owned();
 
     let run = || -> ShimResult<Value> {
-        let url = parse_endpoint(&endpoint)?;
+        // sync_login takes the endpoint as a plain String, unlike SyncAuth
+        // which wants a parsed Url. Validate it either way so a typo is
+        // reported here rather than as an opaque network failure later.
+        let endpoint_opt = parse_endpoint(&endpoint)?.map(|u| u.to_string());
         let client = flat(reqwest::Client::builder().build())?;
         let rt = sync_runtime()?;
         let auth = flat(rt.block_on(anki::sync::login::sync_login(
-            &username, &password, url, client,
+            &username,
+            &password,
+            endpoint_opt,
+            client,
         )))?;
         Ok(json!({ "hkey": auth.hkey }))
     };
