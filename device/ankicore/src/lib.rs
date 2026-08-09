@@ -120,7 +120,7 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
 
         // Flatten depth-first so the QML side keeps a simple list model, but
         // carry the level so it can indent exactly as the desktop does.
-        fn walk(node: &anki::decks::DeckTreeNode, depth: usize, out: &mut Vec<Value>) {
+        fn walk(node: &anki_proto::decks::DeckTreeNode, depth: usize, out: &mut Vec<Value>) {
             // The synthetic root carries no deck of its own.
             if depth > 0 {
                 out.push(json!({
@@ -152,10 +152,11 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn ankicore_set_collapsed(deck_id: i64, collapsed: bool) -> *mut c_char {
     with_collection(|col| {
-        let did = DeckId(deck_id);
-        let mut deck = col.storage.get_deck(did)?.or_not_found(did)?;
-        deck.common.study_collapsed = collapsed;
-        col.update_deck(&mut deck)?;
+        col.set_deck_collapsed(
+            DeckId(deck_id),
+            collapsed,
+            anki::decks::DeckCollapseScope::Reviewer,
+        )?;
         Ok(json!({}))
     })
 }
@@ -171,7 +172,7 @@ pub extern "C" fn ankicore_next_card(deck_id: i64) -> *mut c_char {
         let queued = match queued {
             Some(q) => q,
             None => {
-                let counts = col.counts_for_deck_today(DeckId(deck_id))?;
+                let counts = col.counts_for_deck_today(DeckId(deck_id).into())?;
                 return Ok(json!({
                     "card": Value::Null,
                     "new": counts.new,
@@ -180,7 +181,7 @@ pub extern "C" fn ankicore_next_card(deck_id: i64) -> *mut c_char {
             }
         };
 
-        let card_id = queued.card.id;
+        let card_id = queued.card.id();
         let rendered = col.render_existing_card(card_id, false, false)?;
 
         // The device has no HTML or image support, so flatten here rather
@@ -190,7 +191,7 @@ pub extern "C" fn ankicore_next_card(deck_id: i64) -> *mut c_char {
         let answer = split_answer(&question, &answer_full);
 
         let labels = col.describe_next_states(&queued.states)?;
-        let counts = col.counts_for_deck_today(DeckId(deck_id))?;
+        let counts = col.counts_for_deck_today(DeckId(deck_id).into())?;
 
         Ok(json!({
             "card": {
@@ -218,7 +219,7 @@ pub extern "C" fn ankicore_answer_card(
         }
 
         let queued = col.get_next_card()?.or_invalid("no card to answer")?;
-        if queued.card.id.0 != card_id {
+        if queued.card.id().0 != card_id {
             invalid_input!("card on screen is no longer the scheduler's next card");
         }
 
@@ -235,7 +236,7 @@ pub extern "C" fn ankicore_answer_card(
         };
 
         let mut answer = anki::scheduler::answering::CardAnswer {
-            card_id: queued.card.id,
+            card_id: queued.card.id(),
             current_state: states.current,
             new_state,
             rating: match rating {
