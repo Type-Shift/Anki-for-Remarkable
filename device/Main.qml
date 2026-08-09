@@ -421,23 +421,35 @@ Window {
 
                     Text {
                         anchors.centerIn: parent
-                        text: homeView.confirmExit ? "tap again to leave" : "reMarkable"
+                        text: homeView.confirmExit ? "keep holding..." : "reMarkable"
                         font.family: brandFont
                         font.pixelSize: 84
                         color: "black"
                     }
 
+                    // Press and hold, not tap. The device log showed
+                    // exitToNotes() firing with nobody touching the tablet:
+                    // stray digitiser events were hitting this row often
+                    // enough to satisfy even a two-tap confirmation, dropping
+                    // out of Anki and letting the tablet sleep. A sustained
+                    // hold is something spurious touches do not produce.
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: {
-                            if (homeView.confirmExit) {
-                                confirmTimer.stop()
-                                homeView.confirmExit = false
-                                device.exitToNotes()
-                            } else {
-                                homeView.confirmExit = true
-                                confirmTimer.restart()
-                            }
+                        pressAndHoldInterval: 1500
+
+                        onPressed: {
+                            homeView.confirmExit = true
+                            confirmTimer.stop()
+                        }
+                        onReleased: {
+                            homeView.confirmExit = false
+                        }
+                        onCanceled: {
+                            homeView.confirmExit = false
+                        }
+                        onPressAndHold: {
+                            homeView.confirmExit = false
+                            device.exitToNotes()
                         }
                     }
                 }

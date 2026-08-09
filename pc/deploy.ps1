@@ -111,9 +111,19 @@ Write-Host ("    {0:N0} bytes" -f (Get-Item $bin).Length)
 # Staged as .new then moved, so an interrupted transfer never replaces a
 # working binary with a truncated one.
 
+# Hold the tablet awake for the duration. At 29 MB the copy takes minutes over
+# the tablet's Wi-Fi, and if the app is not running nothing holds a sleep
+# inhibitor -- the device suspends mid-copy and the transfer times out.
+Write-Host "==> holding tablet awake" -ForegroundColor Cyan
+& ssh @sshOpts "root@$Device" 'setsid nohup systemd-inhibit --what=sleep:idle --who=deploy --why="Receiving update" sleep 1800 </dev/null >/dev/null 2>&1 & echo held'
+
 Write-Host "==> copying to tablet (slow over the tablet's Wi-Fi)" -ForegroundColor Cyan
 & scp -C @sshOpts $bin "root@${Device}:/home/root/anki-offline.new"
-if ($LASTEXITCODE -ne 0) { Fail "Binary transfer failed; the existing app is untouched." }
+$copyRc = $LASTEXITCODE
+if ($copyRc -ne 0) {
+    & ssh @sshOpts "root@$Device" 'pkill -f "systemd-inhibit --what=sleep:idle --who=deploy" 2>/dev/null; true'
+    Fail "Binary transfer failed; the existing app is untouched."
+}
 
 & scp @sshOpts `
     (Join-Path $DeviceDir 'run-anki.sh') `
@@ -151,6 +161,9 @@ if (-not $NoStart) {
     }
     Write-Host "    running (pid $($res.Trim()))"
 }
+
+# Release the deploy-time inhibitor; the app holds its own while it runs.
+& ssh @sshOpts "root@$Device" 'pkill -f "systemd-inhibit --what=sleep:idle --who=deploy" 2>/dev/null; true'
 
 & ssh @sshOpts "root@$Device" '/home/root/install-launcher.sh status'
 Write-Host ""
