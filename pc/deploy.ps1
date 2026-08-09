@@ -30,7 +30,7 @@ $DeviceDir = Join-Path $PSScriptRoot '..\device'
 # accept-new: the tablet's IP changes with its DHCP lease, and an unknown
 # address otherwise fails with "Host key verification failed" under BatchMode.
 # Still refuses a CHANGED key for a known host, so this is not blanket trust.
-$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20',
+$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=8',
              '-o','StrictHostKeyChecking=accept-new')
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
@@ -82,7 +82,26 @@ $art = $arts.artifacts[0]
 
 $zip  = Join-Path $env:TEMP 'rmanki-deploy.zip'
 $dest = Join-Path $env:TEMP 'rmanki-deploy'
-Invoke-WebRequest -Uri $art.archive_download_url -Headers $h -OutFile $zip -TimeoutSec 300
+
+# Invoke-WebRequest buffers the whole body and kept failing on this artifact
+# with "connection forcibly closed". HttpClient streams straight to disk and
+# succeeds where it does not.
+Add-Type -AssemblyName System.Net.Http
+$hc = New-Object System.Net.Http.HttpClient
+try {
+    $hc.Timeout = [TimeSpan]::FromMinutes(10)
+    $hc.DefaultRequestHeaders.Add('Authorization', "Bearer $(Get-Token)")
+    $hc.DefaultRequestHeaders.Add('User-Agent', 'rmanki-deploy')
+    $resp = $hc.GetAsync($art.archive_download_url,
+                         [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    if (-not $resp.IsSuccessStatusCode) { Fail "Artifact download failed: $($resp.StatusCode)" }
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+    $fs = [System.IO.File]::Create($zip)
+    try   { $resp.Content.CopyToAsync($fs).GetAwaiter().GetResult() }
+    finally { $fs.Close() }
+} finally {
+    $hc.Dispose()
+}
 Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive $zip -DestinationPath $dest
 $bin = (Get-ChildItem $dest -File | Select-Object -First 1).FullName
@@ -93,7 +112,7 @@ Write-Host ("    {0:N0} bytes" -f (Get-Item $bin).Length)
 # working binary with a truncated one.
 
 Write-Host "==> copying to tablet (slow over the tablet's Wi-Fi)" -ForegroundColor Cyan
-& scp @sshOpts $bin "root@${Device}:/home/root/anki-offline.new"
+& scp -C @sshOpts $bin "root@${Device}:/home/root/anki-offline.new"
 if ($LASTEXITCODE -ne 0) { Fail "Binary transfer failed; the existing app is untouched." }
 
 & scp @sshOpts `
