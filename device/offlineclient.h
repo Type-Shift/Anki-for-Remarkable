@@ -101,7 +101,8 @@ private:
 
     struct DeckNode {
         qint64  id = 0;
-        QString name;            // full "Parent::Child" path
+        QString name;            // leaf component, as shown
+        QString fullName;        // full "Parent::Child" path
         int     level = 0;
         bool    hasChildren = false;
         int     newC = 0;

@@ -145,6 +145,7 @@ void OfflineAnkiClient::loadDecks()
         DeckNode n;
         n.id          = d.value(QStringLiteral("id")).toLongLong();
         n.name        = d.value(QStringLiteral("name")).toString();
+        n.fullName    = d.value(QStringLiteral("full_name")).toString();
         n.level       = d.value(QStringLiteral("level")).toInt();
         n.hasChildren = d.value(QStringLiteral("has_children")).toBool();
         n.newC        = d.value(QStringLiteral("new")).toInt();
@@ -155,10 +156,11 @@ void OfflineAnkiClient::loadDecks()
 
         if (n.level == 0) totalDue += n.due;   // top level already includes children
 
-        // Seed collapse from what Anki itself has stored, once. After that the
-        // user's taps win, since collapse cannot be written back yet.
+        // Seed from what Anki has stored. Keyed on the full path: the node's
+        // own `name` is only the leaf, so matching on it never identified an
+        // ancestor and every subdeck stayed visible.
         if (firstLoad && d.value(QStringLiteral("collapsed")).toBool())
-            m_collapsed.insert(n.name);
+            m_collapsed.insert(n.fullName);
     }
 
     m_currentTotal = totalDue;
@@ -185,7 +187,7 @@ void OfflineAnkiClient::rebuildDeckData()
         // Hide anything beneath a collapsed ancestor.
         bool hidden = false;
         for (const QString &c : m_collapsed) {
-            if (n.name != c && n.name.startsWith(c + QStringLiteral("::"))) {
+            if (n.fullName != c && n.fullName.startsWith(c + QStringLiteral("::"))) {
                 hidden = true;
                 break;
             }
@@ -193,17 +195,17 @@ void OfflineAnkiClient::rebuildDeckData()
         if (hidden) continue;
 
         QVariantMap deck;
-        deck.insert(QStringLiteral("title"),       n.name.split(QStringLiteral("::")).last());
+        deck.insert(QStringLiteral("title"),       n.name);
         deck.insert(QStringLiteral("visible"),     true);
         deck.insert(QStringLiteral("indent"),      n.level);
         deck.insert(QStringLiteral("hasChildren"), n.hasChildren);
-        deck.insert(QStringLiteral("collapsed"),   m_collapsed.contains(n.name));
+        deck.insert(QStringLiteral("collapsed"),   m_collapsed.contains(n.fullName));
         deck.insert(QStringLiteral("newC"),        n.newC);
         deck.insert(QStringLiteral("learnC"),      n.learnC);
         deck.insert(QStringLiteral("dueC"),        n.reviewC);
         m_deckData.append(deck);
         m_visibleDeckIds.append(n.id);
-        m_visibleDeckNames.append(n.name);
+        m_visibleDeckNames.append(n.fullName);
     }
     emit deckDataChanged();
 }
@@ -212,8 +214,19 @@ void OfflineAnkiClient::toggleDeck(int index)
 {
     if (index < 0 || index >= m_visibleDeckNames.size()) return;
     const QString name = m_visibleDeckNames.at(index);
-    if (m_collapsed.contains(name)) m_collapsed.remove(name);
-    else                            m_collapsed.insert(name);
+    const qint64 id = m_visibleDeckIds.at(index);
+
+    const bool nowCollapsed = !m_collapsed.contains(name);
+    if (nowCollapsed) m_collapsed.insert(name);
+    else              m_collapsed.remove(name);
+
+    // Write it into the collection so the choice survives a restart and the
+    // desktop agrees. A failure here is not worth interrupting the user for:
+    // the list still folds, it just will not be remembered.
+    const QVariantMap r = call(ankicore_set_collapsed(id, nowCollapsed),
+                               QStringLiteral("Saving deck state"));
+    if (r.isEmpty()) clearError();
+
     rebuildDeckData();
 }
 

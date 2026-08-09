@@ -131,12 +131,31 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
 
         // Flatten depth-first so QML keeps a simple list model, but carry the
         // level so it can indent exactly as the desktop does.
-        fn walk(node: &anki_proto::decks::DeckTreeNode, depth: usize, out: &mut Vec<Value>) {
+        //
+        // DeckTreeNode::name is the deck's OWN component, not the full path.
+        // The caller needs the full "Parent::Child" path to work out which
+        // rows sit beneath a collapsed one -- without it nothing ever matched
+        // and every subdeck stayed visible regardless of collapse state.
+        fn walk(
+            node: &anki_proto::decks::DeckTreeNode,
+            depth: usize,
+            prefix: &str,
+            out: &mut Vec<Value>,
+        ) {
+            let full_name = if depth == 0 {
+                String::new()
+            } else if prefix.is_empty() {
+                node.name.clone()
+            } else {
+                format!("{prefix}::{}", node.name)
+            };
+
             // The synthetic root carries no deck of its own.
             if depth > 0 {
                 out.push(json!({
                     "id": node.deck_id,
                     "name": node.name,
+                    "full_name": full_name,
                     "level": depth - 1,
                     "collapsed": node.collapsed,
                     "has_children": !node.children.is_empty(),
@@ -146,18 +165,32 @@ pub extern "C" fn ankicore_deck_list() -> *mut c_char {
                     "due": node.new_count + node.learn_count + node.review_count,
                 }));
             }
-            // Always recurse. Pruning collapsed branches here would make the
-            // tree unexpandable on the device, since collapse state cannot be
-            // written back yet. The caller hides children instead, seeded
-            // from each node's own collapsed flag.
+            // Always recurse: pruning here would make the tree unexpandable
+            // on the device. The caller hides rows instead.
             for child in &node.children {
-                walk(child, depth + 1, out);
+                walk(child, depth + 1, &full_name, out);
             }
         }
 
         let mut decks = Vec::new();
-        walk(&tree, 0, &mut decks);
+        walk(&tree, 0, "", &mut decks);
         Ok(json!({ "decks": decks }))
+    })
+}
+
+/// Persist a deck's collapsed state, so it survives a restart and matches
+/// what the desktop shows.
+#[no_mangle]
+pub extern "C" fn ankicore_set_collapsed(deck_id: i64, collapsed: bool) -> *mut c_char {
+    with_collection(move |col| {
+        let did = DeckId(deck_id);
+        let mut deck = flat(col.get_deck(did))?
+            .ok_or_else(|| format!("no deck with id {deck_id}"))?;
+        // study_collapsed is the reviewer's own flag, which is what this app
+        // is: the deck browser keeps a separate one.
+        deck.common.study_collapsed = collapsed;
+        flat(col.update_deck(&mut deck))?;
+        Ok(json!({}))
     })
 }
 
@@ -257,11 +290,84 @@ pub extern "C" fn ankicore_answer_card(
 // the deck tree already reports each deck's collapsed state, so nothing is
 // lost by deferring the write-back.
 
-// Native sync is deliberately absent for now. rslib's normal_sync and
-// sync_login both take a reqwest::Client constructed rslib's own way, and
-// guessing that constructor risks a version mismatch against the reqwest it
-// vendors. Sync stays brokered by the PC, which is already proven, until the
-// client builder can be confirmed against a green build.
+// --- sync -------------------------------------------------------------------
+//
+// rslib's sync client, so the tablet talks to AnkiWeb or a local sync server
+// directly rather than having the PC copy a file back and forth. The endpoint
+// is optional: empty means AnkiWeb.
+
+fn sync_runtime() -> ShimResult<tokio::runtime::Runtime> {
+    // A current-thread runtime is enough and costs far less on a single-core
+    // device than spinning up a worker pool for one request.
+    flat(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build())
+}
+
+fn parse_endpoint(endpoint: &str) -> ShimResult<Option<reqwest::Url>> {
+    if endpoint.trim().is_empty() {
+        return Ok(None);
+    }
+    match endpoint.parse::<reqwest::Url>() {
+        Ok(u) => Ok(Some(u)),
+        Err(e) => Err(format!("bad sync endpoint '{endpoint}': {e}")),
+    }
+}
+
+/// Exchange a username and password for a sync key.
+#[no_mangle]
+pub extern "C" fn ankicore_sync_login(
+    endpoint: *const c_char,
+    username: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
+    let endpoint = c_str(endpoint).unwrap_or("").to_owned();
+    let username = c_str(username).unwrap_or("").to_owned();
+    let password = c_str(password).unwrap_or("").to_owned();
+
+    let run = || -> ShimResult<Value> {
+        let url = parse_endpoint(&endpoint)?;
+        let client = flat(reqwest::Client::builder().build())?;
+        let rt = sync_runtime()?;
+        let auth = flat(rt.block_on(anki::sync::login::sync_login(
+            &username, &password, url, client,
+        )))?;
+        Ok(json!({ "hkey": auth.hkey }))
+    };
+
+    match run() {
+        Ok(mut v) => {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("ok".into(), Value::Bool(true));
+            }
+            to_c_string(v)
+        }
+        Err(e) => err_json("sync_login", e),
+    }
+}
+
+/// Sync the collection using a key from ankicore_sync_login.
+#[no_mangle]
+pub extern "C" fn ankicore_sync(endpoint: *const c_char, hkey: *const c_char) -> *mut c_char {
+    let endpoint = c_str(endpoint).unwrap_or("").to_owned();
+    let hkey = match c_str(hkey) {
+        Some(k) if !k.trim().is_empty() => k.to_owned(),
+        _ => return err_json("sync", "missing sync key"),
+    };
+
+    with_collection(move |col| {
+        let url = parse_endpoint(&endpoint)?;
+        let client = flat(reqwest::Client::builder().build())?;
+        let auth = anki::sync::login::SyncAuth {
+            hkey,
+            endpoint: url,
+            io_timeout_secs: None,
+        };
+        let rt = sync_runtime()?;
+        let out = flat(rt.block_on(col.normal_sync(auth, client)))?;
+        Ok(json!({ "required": format!("{:?}", out.required) }))
+    })
+}
 
 // --- text rendering ---------------------------------------------------------
 

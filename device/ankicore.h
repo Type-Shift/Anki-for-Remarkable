@@ -10,6 +10,9 @@
 // JSON rather than rslib's protobuf service interface: the app already parses
 // JSON and these payloads are tiny, so a protobuf runtime would be dead weight.
 
+// For the bool parameter below, when included from C rather than C++.
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,6 +35,15 @@ char *ankicore_next_card(long long deck_id);
 
 /// Answer the current card. `rating` is 1..4 (Again, Hard, Good, Easy).
 char *ankicore_answer_card(long long card_id, int rating, int milliseconds_taken);
+
+/// Persist a deck's collapsed state so it survives a restart.
+char *ankicore_set_collapsed(long long deck_id, bool collapsed);
+
+/// Exchange a username and password for a sync key. Empty endpoint = AnkiWeb.
+char *ankicore_sync_login(const char *endpoint, const char *username, const char *password);
+
+/// Sync the collection using a key from ankicore_sync_login.
+char *ankicore_sync(const char *endpoint, const char *hkey);
 
 /// Release a string returned by any of the above.
 void ankicore_free_string(char *s);

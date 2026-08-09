@@ -30,6 +30,13 @@ tokio = { version = "1", features = [
     "io-util", "rt-multi-thread", "macros", "sync", "time", "net", "fs",
 ] }
 
+# rslib's sync entry points take a reqwest::Client, and it must be the SAME
+# reqwest rslib vendors or the types will not match. The build log shows it
+# resolving 0.12.28, so naming the same major line lets Cargo unify them.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls", "json", "stream",
+] }
+
 [profile.release]
 # The device has 477 MB of RAM and one core; favour size over speed.
 opt-level = "z"
