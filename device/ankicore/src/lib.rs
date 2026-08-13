@@ -388,14 +388,24 @@ fn strip_html(raw: &str) -> String {
     let no_style = regex_replace_all(raw, r"(?is)<(style|script)\b.*?</(style|script)>", "");
     let brs = regex_replace_all(&no_style, r"(?i)<br\s*/?>", "\n");
     let hrs = regex_replace_all(&brs, r"(?i)<hr[^>]*>", "\n---\n");
-    let text = regex_replace_all(&hrs, r"<[^>]+>", "");
-    let text = text
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'");
+
+    // List items become real bullets on their own lines. Stripping the tags
+    // outright ran every item together into one paragraph.
+    let lis = regex_replace_all(&hrs, r"(?i)<li[^>]*>", "\n- ");
+    let blocks = regex_replace_all(&lis, r"(?i)</(p|div|ul|ol|li|tr|h[1-6])>", "\n");
+
+    let text = regex_replace_all(&blocks, r"<[^>]+>", "");
+
+    // Decode entities properly. A hand-written list covered six of them and
+    // let everything else through verbatim, so cards showed "&ndash;" and
+    // "&bull;" as text. Undecodable input is left as-is rather than dropped:
+    // showing the raw entity beats showing nothing.
+    let text = htmlescape::decode_html(&text).unwrap_or(text);
+
+    // Non-breaking spaces survive decoding as U+00A0 and render as a blank
+    // box in some faces; fold them into ordinary spaces.
+    let text = text.replace('\u{00A0}', " ");
+
     let text = regex_replace_all(&text, r"[ \t]+", " ");
     let text = regex_replace_all(&text, r"\n{3,}", "\n\n");
     text.trim().to_string()

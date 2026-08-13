@@ -21,6 +21,12 @@ anki_proto = { git = "https://github.com/ankitects/anki", tag = "25.09.2" }
 serde_json = "1"
 regex = "1"
 
+# Proper HTML entity decoding. Hand-rolling a handful of replacements missed
+# everything else -- &ndash;, &mdash;, &bull;, &rsquo; and every numeric
+# entity reached the screen as literal text. rslib already pulls this in, so
+# it costs nothing to name it.
+htmlescape = "0.3"
+
 # Not used directly. Built standalone, rslib does not get the feature
 # unification it gets inside Anki's own workspace, and tokio lands without
 # "io-util": rslib's sync code then fails to find AsyncReadExt/read_to_end,
