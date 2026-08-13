@@ -78,6 +78,14 @@ private:
 
     QTimer *m_scanTimer  = nullptr;
     QTimer *m_pollTimer  = nullptr;
+
+    // Set when the user turns Wi-Fi off from the panel, so the auto-reconnect
+    // below does not immediately undo a deliberate choice.
+    bool m_userTurnedOff = false;
+
+    // Consecutive polls seen disconnected. Reconnecting on the first one
+    // would fight the radio while it is still associating.
+    int m_disconnectedPolls = 0;
 };
 
 #endif // WIFIMANAGER_H

@@ -105,6 +105,28 @@ void WifiManager::refreshStatus()
 
     if (state.isEmpty()) state = QStringLiteral("DISCONNECTED");
     setStatusFields(state, ssid, ip);
+
+    // Bring the radio back by itself after a suspend. xochitl would normally
+    // do this and it is stopped while Anki runs, so a resume otherwise left
+    // the tablet awake but off the network with no sign anything was wrong.
+    if (state == QLatin1String("COMPLETED")) {
+        m_disconnectedPolls = 0;
+        return;
+    }
+    if (state == QLatin1String("SCANNING") || state == QLatin1String("ASSOCIATING") ||
+        state == QLatin1String("ASSOCIATED") || state == QLatin1String("4WAY_HANDSHAKE") ||
+        state == QLatin1String("GROUP_HANDSHAKE")) {
+        return;                       // already on its way up; leave it alone
+    }
+    if (m_userTurnedOff) return;      // they asked for it to be off
+
+    // Two consecutive polls, so a brief drop does not trigger a reconnect
+    // while wpa_supplicant is already handling it.
+    if (++m_disconnectedPolls >= 2) {
+        m_disconnectedPolls = 0;
+        qInfo() << "wifi: disconnected without being asked; reconnecting";
+        wpa({QStringLiteral("reconnect")});
+    }
 }
 
 // --- scanning ---------------------------------------------------------------
@@ -201,6 +223,7 @@ int WifiManager::savedNetworkId(const QString &ssid)
 void WifiManager::connectToSaved(const QString &ssid)
 {
     setWifiError(QString());
+    m_userTurnedOff = false;      // asking to join clears any deliberate off
     const int id = savedNetworkId(ssid);
     if (id < 0) {
         setWifiError(QStringLiteral("%1 is not a saved network").arg(ssid));
@@ -214,6 +237,7 @@ void WifiManager::connectToSaved(const QString &ssid)
 void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
 {
     setWifiError(QString());
+    m_userTurnedOff = false;      // asking to join clears any deliberate off
 
     if (ssid.trimmed().isEmpty()) {
         setWifiError(QStringLiteral("Choose a network first"));
@@ -268,12 +292,17 @@ void WifiManager::forgetNetwork(const QString &ssid)
 
 void WifiManager::disconnectWifi()
 {
+    // Remember this was deliberate, or the auto-reconnect in refreshStatus
+    // would put the radio straight back on.
+    m_userTurnedOff = true;
+    m_disconnectedPolls = 0;
     wpa({QStringLiteral("disconnect")});
     setStatusFields(QStringLiteral("DISCONNECTED"), QString(), QString());
 }
 
 void WifiManager::reconnectWifi()
 {
+    m_userTurnedOff = false;
     wpa({QStringLiteral("reconnect")});
     setStatusFields(QStringLiteral("CONNECTING"), m_currentSsid, QString());
     QTimer::singleShot(3000, this, &WifiManager::refreshStatus);
