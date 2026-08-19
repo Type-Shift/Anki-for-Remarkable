@@ -357,6 +357,56 @@ pub extern "C" fn ankicore_sync_login(
     }
 }
 
+/// Full sync, in an explicit direction.
+///
+/// Needed because a normal sync cannot merge two collections that have
+/// diverged from a common ancestor -- which is exactly what happens when a
+/// collection is copied to another device by file and both sides are then
+/// used. The server refuses and asks for a full sync; without this the app
+/// had no way to act on that and simply reported success.
+///
+/// `direction` is "upload" (this device wins) or "download" (the server
+/// wins). Both discard the other side, so the caller must confirm first.
+#[no_mangle]
+pub extern "C" fn ankicore_full_sync(
+    endpoint: *const c_char,
+    hkey: *const c_char,
+    direction: *const c_char,
+) -> *mut c_char {
+    let endpoint = c_str(endpoint).unwrap_or("").to_owned();
+    let hkey = match c_str(hkey) {
+        Some(k) if !k.trim().is_empty() => k.to_owned(),
+        _ => return err_json("full_sync", "missing sync key"),
+    };
+    let upload = match c_str(direction).unwrap_or("") {
+        "upload" => true,
+        "download" => false,
+        other => {
+            return err_json("full_sync",
+                            format!("direction must be upload or download, got '{other}'"))
+        }
+    };
+
+    with_collection(move |col| {
+        let url = parse_endpoint(&endpoint)?;
+        let client = flat(reqwest::Client::builder().build())?;
+        let auth = anki::sync::login::SyncAuth {
+            hkey,
+            endpoint: url,
+            io_timeout_secs: None,
+        };
+        let rt = sync_runtime()?;
+
+        if upload {
+            flat(rt.block_on(col.full_upload(auth, client)))?;
+            Ok(json!({ "direction": "upload" }))
+        } else {
+            flat(rt.block_on(col.full_download(auth, client)))?;
+            Ok(json!({ "direction": "download" }))
+        }
+    })
+}
+
 /// Sync the collection using a key from ankicore_sync_login.
 #[no_mangle]
 pub extern "C" fn ankicore_sync(endpoint: *const c_char, hkey: *const c_char) -> *mut c_char {
