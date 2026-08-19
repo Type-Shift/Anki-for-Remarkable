@@ -69,6 +69,8 @@ public:
     Q_INVOKABLE void toggleDeck(int index);
     Q_INVOKABLE void checkForNewCards();
     Q_INVOKABLE void goHome();
+    /// Reload deck data without changing which screen is shown.
+    void refreshDecks();
 
 signals:
     void currentStateChanged();
@@ -96,6 +98,7 @@ private:
     QVariantMap call(char *rawJson, const QString &context);
 
     bool openCollection();
+    bool m_suppressNavigation = false;
     void rebuildDeckData();      // from m_deckNodes plus local collapse state
     void showNextCard();
 

@@ -173,8 +173,20 @@ void OfflineAnkiClient::loadDecks()
     clearError();
     rebuildDeckData();
 
+    // Refreshing after a sync must not move the user. Syncing from the
+    // launcher used to drop them straight into the deck list, which looked
+    // like the app deciding to open itself.
+    if (m_suppressNavigation) return;
+
     setCurrentState(totalDue > 0 ? QStringLiteral("DECKS")
                                  : QStringLiteral("DONE"));
+}
+
+void OfflineAnkiClient::refreshDecks()
+{
+    m_suppressNavigation = true;
+    loadDecks();
+    m_suppressNavigation = false;
 }
 
 void OfflineAnkiClient::rebuildDeckData()

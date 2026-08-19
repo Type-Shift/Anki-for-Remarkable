@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
 
     // A sync rewrites the collection underneath the deck list, so refresh it.
     QObject::connect(&sync, &SyncManager::syncFinished, &client,
-                     [&client](bool ok) { if (ok) client.loadDecks(); });
+                     [&client](bool ok) { if (ok) client.refreshDecks(); });
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("anki"), &client);

@@ -163,8 +163,12 @@ void SyncManager::sync()
         const QJsonObject obj =
             parseReply(ankicore_sync(ep.constData(), key.constData()), &error);
         const QString required = obj.value(QStringLiteral("required")).toString();
+        const bool reallySynced = obj.value(QStringLiteral("synced")).toBool(false);
+        const bool fullSyncRequired =
+            obj.value(QStringLiteral("full_sync_required")).toBool(false);
 
-        QMetaObject::invokeMethod(this, [this, required, error]() {
+        QMetaObject::invokeMethod(this, [this, required, reallySynced,
+                                         fullSyncRequired, error]() {
             setBusy(false);
             if (!error.isEmpty()) {
                 // An expired or revoked key reads as an auth failure; make the
@@ -177,6 +181,22 @@ void SyncManager::sync()
                 } else {
                     setStatus(QStringLiteral("Sync failed"), error);
                 }
+                emit syncFinished(false);
+                return;
+            }
+            // rslib returning Ok does not mean anything moved. When the
+            // server cannot merge, it asks for a full sync and nothing has
+            // been transferred -- saying "Synced" there was simply untrue.
+            if (fullSyncRequired) {
+                setStatus(QStringLiteral("Full sync needed"),
+                          QStringLiteral("the collections have diverged too far to merge; "
+                                         "choose a direction from Anki on your computer"));
+                emit syncFinished(false);
+                return;
+            }
+            if (!reallySynced) {
+                setStatus(QStringLiteral("Not synced"),
+                          QStringLiteral("server replied: ") + required);
                 emit syncFinished(false);
                 return;
             }

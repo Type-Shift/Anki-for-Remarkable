@@ -376,7 +376,20 @@ pub extern "C" fn ankicore_sync(endpoint: *const c_char, hkey: *const c_char) ->
         };
         let rt = sync_runtime()?;
         let out = flat(rt.block_on(col.normal_sync(auth, client)))?;
-        Ok(json!({ "required": format!("{:?}", out.required) }))
+
+        // normal_sync returning Ok does NOT mean anything was transferred.
+        // When the server and the collection disagree too much to merge, it
+        // comes back asking for a full sync and nothing has moved. Reporting
+        // that as success told the user "Synced" while AnkiWeb sat unchanged.
+        let required = format!("{:?}", out.required);
+        let synced = required.contains("NoChanges");
+        let full_required = required.contains("FullSync");
+
+        Ok(json!({
+            "required": required,
+            "synced": synced,
+            "full_sync_required": full_required,
+        }))
     })
 }
 
