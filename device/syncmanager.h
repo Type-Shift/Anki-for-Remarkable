@@ -29,6 +29,9 @@ class SyncManager : public QObject
     Q_PROPERTY(QString status     READ status        NOTIFY statusChanged)
     Q_PROPERTY(QString lastError  READ lastError     NOTIFY statusChanged)
     Q_PROPERTY(QString endpoint   READ endpoint      WRITE setEndpoint NOTIFY endpointChanged)
+    // Set when the server refuses to merge. The UI must then ask which side
+    // wins, because either answer discards the other.
+    Q_PROPERTY(bool fullSyncNeeded READ fullSyncNeeded NOTIFY statusChanged)
 
 public:
     explicit SyncManager(QObject *parent = nullptr);
@@ -38,12 +41,16 @@ public:
     QString status() const { return m_status; }
     QString lastError() const { return m_lastError; }
     QString endpoint() const { return m_endpoint; }
+    bool fullSyncNeeded() const { return m_fullSyncNeeded; }
     void setEndpoint(const QString &e);
 
     /// Exchange an AnkiWeb email and password for a sync key, and remember it.
     Q_INVOKABLE void login(const QString &email, const QString &password);
     /// Sync now, using the stored key.
     Q_INVOKABLE void sync();
+    /// Resolve a divergence. "upload" makes this device win, "download" makes
+    /// AnkiWeb win. Both discard the other side, so only call after asking.
+    Q_INVOKABLE void fullSync(const QString &direction);
     /// Forget the stored key.
     Q_INVOKABLE void logout();
 
@@ -67,6 +74,7 @@ private:
     QString m_status;
     QString m_lastError;
     bool    m_busy = false;
+    bool    m_fullSyncNeeded = false;
 
     QString m_keyPath;
 };

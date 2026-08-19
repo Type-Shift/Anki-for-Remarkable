@@ -45,6 +45,10 @@ char *ankicore_sync_login(const char *endpoint, const char *username, const char
 /// Sync the collection using a key from ankicore_sync_login.
 char *ankicore_sync(const char *endpoint, const char *hkey);
 
+/// Full sync in an explicit direction: "upload" (this device wins) or
+/// "download" (AnkiWeb wins). Both discard the other side.
+char *ankicore_full_sync(const char *endpoint, const char *hkey, const char *direction);
+
 /// Release a string returned by any of the above.
 void ankicore_free_string(char *s);
 

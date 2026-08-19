@@ -19,6 +19,10 @@ Window {
     // fields and keyboard, so it is reused rather than duplicated.
     property bool syncLoginOpen: false
 
+    // Shown when AnkiWeb and this device have diverged. Both answers throw
+    // work away, so the choice is always explicit and never defaulted.
+    property bool fullSyncAskOpen: false
+
     // Whether the Wi-Fi panel is open. Needed because running this app
     // requires stopping xochitl, which removes reMarkable's own settings UI.
     property bool wifiOpen: false
@@ -399,8 +403,9 @@ Window {
                         anchors.fill: parent
                         enabled: wifi.connected && !sync.busy
                         onClicked: {
-                            if (sync.loggedIn) sync.sync()
-                            else               root.syncLoginOpen = true
+                            if (!sync.loggedIn)          root.syncLoginOpen = true
+                            else if (sync.fullSyncNeeded) root.fullSyncAskOpen = true
+                            else                          sync.sync()
                         }
                     }
                 }
@@ -1541,6 +1546,124 @@ Window {
     }
 
     // ==========================================
+    // ==========================================
+    // Full sync direction
+    // ==========================================
+    Item {
+        id: fullSyncAsk
+        anchors.fill: parent
+        visible: root.fullSyncAskOpen
+        z: 150
+
+        Rectangle { anchors.fill: parent; color: "white" }
+
+        Column {
+            anchors.centerIn: parent
+            width: parent.width - 300
+            spacing: 40
+
+            Text {
+                text: "Collections have diverged"
+                font.family: brandFont
+                font.pixelSize: 84
+                font.weight: Font.Light
+                color: "black"
+            }
+
+            Text {
+                text: "This tablet and AnkiWeb have both changed since they last agreed, "
+                      + "so they cannot be merged. Choose which one to keep. "
+                      + "The other is discarded."
+                font.family: brandFont
+                font.pixelSize: 44
+                font.weight: Font.Light
+                color: "#555555"
+                wrapMode: Text.WordWrap
+                width: parent.width
+            }
+
+            Rectangle { width: parent.width; height: 2; color: "black" }
+
+            Item {
+                width: parent.width
+                height: 180
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Keep this tablet"
+                    font.family: brandFont
+                    font.pixelSize: 56
+                    color: "black"
+                }
+                Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "replaces AnkiWeb"
+                    font.family: brandFont
+                    font.pixelSize: 36
+                    font.weight: Font.Light
+                    color: "#888888"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.fullSyncAskOpen = false
+                        sync.fullSync("upload")
+                    }
+                }
+            }
+
+            Rectangle { width: parent.width; height: 1; color: "#BBBBBB" }
+
+            Item {
+                width: parent.width
+                height: 180
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Keep AnkiWeb"
+                    font.family: brandFont
+                    font.pixelSize: 56
+                    color: "black"
+                }
+                Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "replaces this tablet"
+                    font.family: brandFont
+                    font.pixelSize: 36
+                    font.weight: Font.Light
+                    color: "#888888"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.fullSyncAskOpen = false
+                        sync.fullSync("download")
+                    }
+                }
+            }
+
+            Rectangle { width: parent.width; height: 2; color: "black" }
+
+            Text {
+                text: "Cancel"
+                font.family: brandFont
+                font.pixelSize: 48
+                color: "black"
+                topPadding: 20
+
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -40
+                    onClicked: root.fullSyncAskOpen = false
+                }
+            }
+        }
+    }
+
     // Wi-Fi Overlay
     // ==========================================
     //

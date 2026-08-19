@@ -152,6 +152,7 @@ void SyncManager::sync()
         return;
     }
 
+    m_fullSyncNeeded = false;
     setBusy(true);
     setStatus(QStringLiteral("Syncing..."));
 
@@ -188,9 +189,10 @@ void SyncManager::sync()
             // server cannot merge, it asks for a full sync and nothing has
             // been transferred -- saying "Synced" there was simply untrue.
             if (fullSyncRequired) {
+                m_fullSyncNeeded = true;
                 setStatus(QStringLiteral("Full sync needed"),
-                          QStringLiteral("the collections have diverged too far to merge; "
-                                         "choose a direction from Anki on your computer"));
+                          QStringLiteral("this device and AnkiWeb have diverged; "
+                                         "choose which one wins"));
                 emit syncFinished(false);
                 return;
             }
@@ -200,6 +202,48 @@ void SyncManager::sync()
                 emit syncFinished(false);
                 return;
             }
+            setStatus(QStringLiteral("Synced"));
+            emit syncFinished(true);
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
+void SyncManager::fullSync(const QString &direction)
+{
+    if (m_busy) return;
+    if (m_hkey.isEmpty()) {
+        setStatus(QStringLiteral("Sign in to AnkiWeb first"),
+                  QStringLiteral("no sync key stored"));
+        return;
+    }
+    if (direction != QLatin1String("upload") && direction != QLatin1String("download")) {
+        setStatus(QStringLiteral("Sync failed"),
+                  QStringLiteral("unknown direction: ") + direction);
+        return;
+    }
+
+    setBusy(true);
+    setStatus(direction == QLatin1String("upload")
+                  ? QStringLiteral("Uploading everything...")
+                  : QStringLiteral("Downloading everything..."));
+
+    const QByteArray ep  = m_endpoint.toUtf8();
+    const QByteArray key = m_hkey.toUtf8();
+    const QByteArray dir = direction.toUtf8();
+
+    std::thread([this, ep, key, dir]() {
+        QString error;
+        parseReply(ankicore_full_sync(ep.constData(), key.constData(), dir.constData()),
+                   &error);
+
+        QMetaObject::invokeMethod(this, [this, error]() {
+            setBusy(false);
+            if (!error.isEmpty()) {
+                setStatus(QStringLiteral("Full sync failed"), error);
+                emit syncFinished(false);
+                return;
+            }
+            m_fullSyncNeeded = false;
             setStatus(QStringLiteral("Synced"));
             emit syncFinished(true);
         }, Qt::QueuedConnection);
