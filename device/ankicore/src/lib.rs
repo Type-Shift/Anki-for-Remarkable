@@ -39,6 +39,9 @@ fn flat<T, E: std::fmt::Display>(r: std::result::Result<T, E>) -> ShimResult<T> 
 // A process-wide handle keeps the C surface simple: no pointer lifetimes to
 // get wrong across the FFI boundary.
 static COLLECTION: Mutex<Option<Collection>> = Mutex::new(None);
+// full_upload/full_download consume the Collection, so it has to be taken out
+// of the handle and reopened afterwards. That needs the path.
+static COLLECTION_PATH: Mutex<Option<String>> = Mutex::new(None);
 
 fn to_c_string(v: Value) -> *mut c_char {
     match CString::new(v.to_string()) {
@@ -82,9 +85,10 @@ pub extern "C" fn ankicore_open(path: *const c_char) -> *mut c_char {
         None => return err_json("open", "invalid path"),
     };
 
-    match CollectionBuilder::new(path).build() {
+    match CollectionBuilder::new(&path).build() {
         Ok(col) => {
             *COLLECTION.lock().unwrap() = Some(col);
+            *COLLECTION_PATH.lock().unwrap() = Some(path);
             to_c_string(json!({ "ok": true }))
         }
         Err(e) => err_json("open", e),
@@ -387,7 +391,7 @@ pub extern "C" fn ankicore_full_sync(
         }
     };
 
-    with_collection(move |col| {
+    let run = || -> ShimResult<Value> {
         let url = parse_endpoint(&endpoint)?;
         let client = flat(reqwest::Client::builder().build())?;
         let auth = anki::sync::login::SyncAuth {
@@ -395,16 +399,50 @@ pub extern "C" fn ankicore_full_sync(
             endpoint: url,
             io_timeout_secs: None,
         };
-        let rt = sync_runtime()?;
 
-        if upload {
-            flat(rt.block_on(col.full_upload(auth, client)))?;
-            Ok(json!({ "direction": "upload" }))
+        let path = COLLECTION_PATH
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "collection not open".to_string())?;
+
+        // full_upload/full_download take the Collection by value: a full sync
+        // replaces the whole thing, so rslib consumes it rather than editing
+        // in place. Take it out of the handle, hand it over, reopen after.
+        let col = COLLECTION
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| "collection not open".to_string())?;
+
+        let rt = sync_runtime()?;
+        let result = if upload {
+            rt.block_on(col.full_upload(auth, client))
         } else {
-            flat(rt.block_on(col.full_download(auth, client)))?;
-            Ok(json!({ "direction": "download" }))
+            rt.block_on(col.full_download(auth, client))
+        };
+
+        // Reopen either way. Leaving the handle empty after a failure would
+        // brick the app until restart, with no cards and no way back.
+        let reopened = CollectionBuilder::new(&path).build();
+        match reopened {
+            Ok(c) => *COLLECTION.lock().unwrap() = Some(c),
+            Err(e) => return Err(format!("collection could not be reopened: {e}")),
         }
-    })
+
+        flat(result)?;
+        Ok(json!({ "direction": if upload { "upload" } else { "download" } }))
+    };
+
+    match run() {
+        Ok(mut v) => {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("ok".into(), Value::Bool(true));
+            }
+            to_c_string(v)
+        }
+        Err(e) => err_json("full_sync", e),
+    }
 }
 
 /// Sync the collection using a key from ankicore_sync_login.
