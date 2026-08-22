@@ -127,8 +127,11 @@ void SyncManager::login(const QString &email, const QString &password)
             parseReply(ankicore_sync_login(ep.constData(), em.constData(), pw.constData()),
                        &error);
         const QString hkey = obj.value(QStringLiteral("hkey")).toString();
+        // AnkiWeb spreads accounts over several hosts and names ours at
+        // login. Everything after this has to go there.
+        const QString host = obj.value(QStringLiteral("endpoint")).toString();
 
-        QMetaObject::invokeMethod(this, [this, hkey, error]() {
+        QMetaObject::invokeMethod(this, [this, hkey, host, error]() {
             setBusy(false);
             if (!error.isEmpty()) {
                 setStatus(QStringLiteral("Sign-in failed"), error);
@@ -136,6 +139,7 @@ void SyncManager::login(const QString &email, const QString &password)
             }
             m_hkey = hkey;
             saveKey(hkey);
+            if (!host.isEmpty()) setEndpoint(host);
             emit loggedInChanged();
             setStatus(QStringLiteral("Signed in"));
             sync();     // the point of signing in
@@ -167,10 +171,15 @@ void SyncManager::sync()
         const bool reallySynced = obj.value(QStringLiteral("synced")).toBool(false);
         const bool fullSyncRequired =
             obj.value(QStringLiteral("full_sync_required")).toBool(false);
+        // The server moves clients between shards by handing back a new
+        // endpoint. rslib does not act on it -- storing it is our job, and
+        // not doing so sent every full sync to the wrong host.
+        const QString newHost = obj.value(QStringLiteral("new_endpoint")).toString();
 
         QMetaObject::invokeMethod(this, [this, required, reallySynced,
-                                         fullSyncRequired, error]() {
+                                         fullSyncRequired, newHost, error]() {
             setBusy(false);
+            if (!newHost.isEmpty()) setEndpoint(newHost);
             if (!error.isEmpty()) {
                 // An expired or revoked key reads as an auth failure; make the
                 // user sign in again rather than retrying forever.

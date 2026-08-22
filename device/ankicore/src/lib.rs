@@ -367,7 +367,14 @@ pub extern "C" fn ankicore_sync_login(
             endpoint_opt,
             client,
         )))?;
-        Ok(json!({ "hkey": auth.hkey }))
+        // AnkiWeb shards accounts across hosts and hands the right one
+        // back at login. Dropping it meant every later request went to
+        // the default host; normal sync survives that because rslib
+        // re-resolves it internally, full sync does not.
+        Ok(json!({
+            "hkey": auth.hkey,
+            "endpoint": auth.endpoint.map(|u| u.to_string()),
+        }))
     };
 
     match run() {
@@ -493,10 +500,15 @@ pub extern "C" fn ankicore_sync(endpoint: *const c_char, hkey: *const c_char) ->
         let synced = required.contains("NoChanges");
         let full_required = required.contains("FullSync");
 
+        // new_endpoint is how the server moves a client to another shard.
+        // rslib deliberately does not act on it -- the caller is expected to
+        // store it and use it from then on, which is what the desktop does.
         Ok(json!({
             "required": required,
             "synced": synced,
             "full_sync_required": full_required,
+            "new_endpoint": out.new_endpoint,
+            "server_message": out.server_message,
         }))
     })
 }
