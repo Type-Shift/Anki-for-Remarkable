@@ -35,6 +35,26 @@ fn flat<T, E: std::fmt::Display>(r: std::result::Result<T, E>) -> ShimResult<T> 
     r.map_err(|e| e.to_string())
 }
 
+/// Same, but keeping the Debug form as well.
+///
+/// AnkiError's Display for a sync failure is the bare word "SyncError" -- the
+/// kind and the server's message live only in the Debug representation. A log
+/// line saying "full_sync: SyncError" is useless for working out whether the
+/// key expired, the server refused, or the upload was rejected.
+fn flat_detail<T, E: std::fmt::Display + std::fmt::Debug>(
+    r: std::result::Result<T, E>,
+) -> ShimResult<T> {
+    r.map_err(|e| {
+        let shown = e.to_string();
+        let debug = format!("{e:?}");
+        if debug.contains(&shown) {
+            debug
+        } else {
+            format!("{shown} | {debug}")
+        }
+    })
+}
+
 // rslib's Collection is not Sync, and the Qt side is single-threaded anyway.
 // A process-wide handle keeps the C surface simple: no pointer lifetimes to
 // get wrong across the FFI boundary.
@@ -430,7 +450,7 @@ pub extern "C" fn ankicore_full_sync(
             Err(e) => return Err(format!("collection could not be reopened: {e}")),
         }
 
-        flat(result)?;
+        flat_detail(result)?;
         Ok(json!({ "direction": if upload { "upload" } else { "download" } }))
     };
 
@@ -463,7 +483,7 @@ pub extern "C" fn ankicore_sync(endpoint: *const c_char, hkey: *const c_char) ->
             io_timeout_secs: None,
         };
         let rt = sync_runtime()?;
-        let out = flat(rt.block_on(col.normal_sync(auth, client)))?;
+        let out = flat_detail(rt.block_on(col.normal_sync(auth, client)))?;
 
         // normal_sync returning Ok does NOT mean anything was transferred.
         // When the server and the collection disagree too much to merge, it

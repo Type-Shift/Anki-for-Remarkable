@@ -9,6 +9,7 @@
 
 $script:RM_MAC   = 'c0-84-7d-38-83-51'
 $script:RM_CACHE = "$env:LOCALAPPDATA\rmanki-offline\last-ip.txt"
+$script:RM_PORT  = 22
 
 function Get-RmMacFromArp {
     $entry = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -22,9 +23,9 @@ function Get-RmMacFromArp {
 function Get-RmSweepTargets {
     <#
         Every address in each connected IPv4 subnet, honouring the real prefix
-        length. Deriving a /24 from the host address was the bug: this network
-        is a /22 (192.168.68.0-192.168.71.255), so three quarters of it were
-        never probed and the tablet could sit unfound at .69/.70/.71.
+        length. Deriving a /24 from the host address was the bug: one network
+        here is a /22 (192.168.68.0-192.168.71.255), so three quarters of it
+        were never probed and the tablet could sit unfound at .69/.70/.71.
     #>
     $targets = @()
     $locals = Get-NetIPAddress -AddressFamily IPv4 |
@@ -53,24 +54,50 @@ function Get-RmSweepTargets {
     return $targets
 }
 
-function Invoke-RmSweep {
-    # SendPingAsync rather than ForEach-Object -Parallel, which is PowerShell 7
-    # only; this machine runs 5.1.
+function Invoke-RmTcpSweep {
+    <#
+        Probe port 22 rather than ICMP. The tablet does not answer ping at all
+        -- an ICMP sweep finds nothing and reports "Tablet not found" for a
+        device that is sitting right there answering SSH. A TCP SYN also forces
+        ARP resolution, so it populates the neighbour table either way.
+
+        Returns every address whose port 22 accepted a connection.
+    #>
     $targets = Get-RmSweepTargets
-    if ($targets.Count -eq 0) { return }
+    if ($targets.Count -eq 0) { return @() }
 
-    $tasks = @(); $pingers = @()
+    # Async connects rather than ForEach-Object -Parallel, which is PowerShell 7
+    # only; this machine runs 5.1.
+    $clients = @(); $tasks = @()
     foreach ($t in $targets) {
-        $p = New-Object System.Net.NetworkInformation.Ping
-        $pingers += $p
-        $tasks   += $p.SendPingAsync($t, 900)
+        $c = New-Object System.Net.Sockets.TcpClient
+        $clients += $c
+        $tasks   += $c.ConnectAsync($t, $script:RM_PORT)
     }
-    # Generous: an under-short wait meant ARP had not populated by the time we
-    # looked, and discovery reported "not found" for a device that was there.
-    [void][System.Threading.Tasks.Task]::WaitAll($tasks, 25000)
-    foreach ($p in $pingers) { $p.Dispose() }
 
-    Start-Sleep -Milliseconds 800     # let the ARP cache settle
+    # Unreachable addresses do not fail fast, so the wait has to cover the OS
+    # SYN retry window rather than the round trip to a host that is present.
+    [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$tasks, 12000)
+
+    $found = @()
+    for ($i = 0; $i -lt $clients.Count; $i++) {
+        if ($tasks[$i].Status -eq 'RanToCompletion' -and $clients[$i].Connected) {
+            $found += $targets[$i]
+        }
+        $clients[$i].Close()
+    }
+    return $found
+}
+
+function Test-RmIsRemarkable {
+    <#
+        A host answering SSH is not necessarily the tablet. Confirm by MAC
+        before we start pushing binaries at it.
+    #>
+    param([string]$Address)
+    $n = Get-NetNeighbor -IPAddress $Address -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+    return ($n -and $n.LinkLayerAddress -eq $script:RM_MAC)
 }
 
 function Find-RemarkableDevice {
@@ -81,7 +108,7 @@ function Find-RemarkableDevice {
 
     if (Test-Path $script:RM_CACHE) {
         $last = (Get-Content $script:RM_CACHE -Raw).Trim()
-        if ($last -and (Test-NetConnection -ComputerName $last -Port 22 `
+        if ($last -and (Test-NetConnection -ComputerName $last -Port $script:RM_PORT `
                         -WarningAction SilentlyContinue).TcpTestSucceeded) {
             return $last
         }
@@ -90,8 +117,18 @@ function Find-RemarkableDevice {
     if (-not $Quiet) {
         Write-Host "    searching the network for the tablet..." -ForegroundColor DarkGray
     }
-    Invoke-RmSweep
-    return Get-RmMacFromArp
+
+    $hosts = Invoke-RmTcpSweep
+
+    # The sweep just forced ARP resolution across the subnet, so the neighbour
+    # table is the most reliable answer now.
+    $ip = Get-RmMacFromArp
+    if ($ip) { return $ip }
+
+    foreach ($h in $hosts) {
+        if (Test-RmIsRemarkable $h) { return $h }
+    }
+    return $null
 }
 
 function Save-RmAddress {
