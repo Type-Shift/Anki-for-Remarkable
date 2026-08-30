@@ -100,11 +100,20 @@ function Test-RmIsRemarkable {
     return ($n -and $n.LinkLayerAddress -eq $script:RM_MAC)
 }
 
+function Test-RmReachable {
+    param([string]$Address)
+    return (Test-NetConnection -ComputerName $Address -Port $script:RM_PORT `
+            -WarningAction SilentlyContinue).TcpTestSucceeded
+}
+
 function Find-RemarkableDevice {
     param([switch]$Quiet)
 
+    # An ARP entry outlives the device being awake, so it is a hint, not an
+    # answer: a sleeping tablet was reported as found and every command after
+    # it timed out. Confirm the address still answers before handing it back.
     $ip = Get-RmMacFromArp
-    if ($ip) { return $ip }
+    if ($ip -and (Test-RmReachable $ip)) { return $ip }
 
     if (Test-Path $script:RM_CACHE) {
         $last = (Get-Content $script:RM_CACHE -Raw).Trim()
@@ -123,7 +132,7 @@ function Find-RemarkableDevice {
     # The sweep just forced ARP resolution across the subnet, so the neighbour
     # table is the most reliable answer now.
     $ip = Get-RmMacFromArp
-    if ($ip) { return $ip }
+    if ($ip -and (Test-RmReachable $ip)) { return $ip }
 
     foreach ($h in $hosts) {
         if (Test-RmIsRemarkable $h) { return $h }
