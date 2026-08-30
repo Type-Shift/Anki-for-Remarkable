@@ -54,6 +54,49 @@ Window {
         return s.length > maxLen ? s.substring(0, maxLen) + "..." : s
     }
 
+    // Hardware buttons. Centre steps back, the outer two page the card.
+    // Focus lives here rather than on any screen: the overlays use a
+    // hand-rolled keyboard, not TextInput, so nothing else competes for it.
+    function hardwareBack() {
+        if (wifiOpen)             wifiOpen = false
+        else if (syncLoginOpen)   syncLoginOpen = false
+        else if (fullSyncAskOpen) fullSyncAskOpen = false
+        else if (anki.currentState === "DECKS") anki.goHome()
+        else if (anki.currentState === "STUDY" || anki.currentState === "DONE")
+            anki.loadDecks()
+    }
+
+    function scrollCard(fraction) {
+        var limit = Math.max(0, cardScroll.contentHeight - cardScroll.height)
+        cardScroll.contentY = Math.max(
+            0, Math.min(cardScroll.contentY + cardScroll.height * fraction, limit))
+    }
+
+    Item {
+        focus: true
+        Keys.onPressed: function (event) {
+            // ponytail: logged because the panel is mounted upside down
+            // (rotate=180), so the button under the user's left hand is not
+            // necessarily the one reporting KEY_LEFT. Drop once confirmed.
+            console.log("hw key:", event.key)
+
+            if (event.key === Qt.Key_Home || event.key === Qt.Key_Escape
+                || event.key === Qt.Key_Back) {
+                hardwareBack()
+                event.accepted = true
+            } else if (anki.currentState === "STUDY"
+                       && !wifiOpen && !syncLoginOpen && !fullSyncAskOpen) {
+                if (event.key === Qt.Key_Left) {
+                    scrollCard(0.5)
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Right) {
+                    scrollCard(-0.5)
+                    event.accepted = true
+                }
+            }
+        }
+    }
+
     // ==========================================
     // UI Layout
     // ==========================================
