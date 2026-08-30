@@ -75,22 +75,20 @@ Window {
     Item {
         focus: true
         Keys.onPressed: function (event) {
-            // ponytail: logged because the panel is mounted upside down
-            // (rotate=180), so the button under the user's left hand is not
-            // necessarily the one reporting KEY_LEFT. Drop once confirmed.
-            console.log("hw key:", event.key)
-
             if (event.key === Qt.Key_Home || event.key === Qt.Key_Escape
                 || event.key === Qt.Key_Back) {
                 hardwareBack()
                 event.accepted = true
             } else if (anki.currentState === "STUDY"
                        && !wifiOpen && !syncLoginOpen && !fullSyncAskOpen) {
+                // The panel is mounted upside down (rotate=180) but key
+                // codes are not rotated, so KEY_LEFT is the button on the
+                // user's right. Scroll directions are swapped to match.
                 if (event.key === Qt.Key_Left) {
-                    scrollCard(0.5)
+                    scrollCard(-0.5)
                     event.accepted = true
                 } else if (event.key === Qt.Key_Right) {
-                    scrollCard(-0.5)
+                    scrollCard(0.5)
                     event.accepted = true
                 }
             }
