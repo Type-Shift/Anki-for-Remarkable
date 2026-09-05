@@ -2,7 +2,6 @@
     Fetch the latest CI-built binary and install it on the reMarkable.
 
         .\deploy.ps1                 # deploy app + scripts, then start it
-        .\deploy.ps1 -InstallLauncher # also enable the boot-time launcher
         .\deploy.ps1 -RemoveLauncher  # go back to a stock reMarkable
 
     Finds the tablet by MAC, so it works on school Wi-Fi, at home, or on a
@@ -14,7 +13,6 @@
 [CmdletBinding()]
 param(
     [string]$Device = '',
-    [switch]$InstallLauncher,
     [switch]$RemoveLauncher,
     [switch]$NoStart
 )
@@ -223,10 +221,14 @@ Write-Host "    checksum verified"
 
 # --- launcher ---------------------------------------------------------------
 
-if ($InstallLauncher) {
-    Write-Host "==> installing boot launcher" -ForegroundColor Cyan
-    & ssh @sshOpts "root@$Device" '/home/root/install-launcher.sh install'
-}
+# Always, not only with -InstallLauncher. A firmware update swaps the whole
+# root filesystem, so /etc/systemd/system loses the unit while /home/root
+# keeps the app: Anki is still installed but nothing starts it any more, and
+# the tablet just boots to notes. install is idempotent, so re-running deploy
+# is the one recovery step rather than something to remember afterwards.
+Write-Host "==> ensuring boot launcher" -ForegroundColor Cyan
+& ssh @sshOpts "root@$Device" '/home/root/install-launcher.sh install'
+
 
 # --- start ------------------------------------------------------------------
 

@@ -43,7 +43,7 @@ school Wi-Fi, at home, or on a PC-hosted hotspot with no edits.
 
 ```powershell
 .\pc\deploy.ps1                    # fetch latest CI build, install, run
-.\pc\deploy.ps1 -InstallLauncher   # also start Anki at boot
+.\pc\deploy.ps1                    # also (re)installs the boot launcher
 .\pc\deploy.ps1 -RemoveLauncher    # back to a stock reMarkable
 .\pc\ci-status.ps1                 # check the last build
 ```
