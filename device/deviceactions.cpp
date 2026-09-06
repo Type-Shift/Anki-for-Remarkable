@@ -132,6 +132,13 @@ void DeviceActions::exitToNotes()
     QTimer::singleShot(1200, qApp, &QCoreApplication::quit);
 }
 
+void DeviceActions::powerOffDevice()
+{
+    // The idle timer is deliberately not restarted: there is nothing to come
+    // back to. suspendDevice restarts it because the app survives a suspend.
+    QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("poweroff")});
+}
+
 void DeviceActions::rebootDevice()
 {
     QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("reboot")});

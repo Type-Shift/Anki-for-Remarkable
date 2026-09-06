@@ -38,6 +38,8 @@ public:
     Q_INVOKABLE void rebootDevice();
     // Suspend now, as the power button would.
     Q_INVOKABLE void suspendDevice();
+    // Power off completely. The only state that draws no battery at all.
+    Q_INVOKABLE void powerOffDevice();
 
     // Any input anywhere counts as activity; watching qApp avoids having to
     // thread a "wake up" call through every screen in the QML.

@@ -72,9 +72,46 @@ Window {
             0, Math.min(cardScroll.contentY + cardScroll.height * fraction, limit))
     }
 
+    // Power button. A tap sleeps, a press and hold powers off. Which of the
+    // two Qt reports for KEY_POWER varies by keymap, so both are accepted.
+    function isPowerKey(k) {
+        return k === Qt.Key_PowerOff || k === Qt.Key_PowerDown
+               || k === Qt.Key_Standby || k === Qt.Key_Sleep
+    }
+
+    Timer {
+        id: powerHoldTimer
+        interval: 1200
+        onTriggered: {
+            powerOverlay.mode = "off"
+            powerActTimer.restart()
+        }
+    }
+
+    // The overlay has to be on screen before the device stops running, or
+    // e-ink is left showing whatever was there when the power went.
+    Timer {
+        id: powerActTimer
+        interval: 700
+        onTriggered: {
+            if (powerOverlay.mode === "off") device.powerOffDevice()
+            else                             device.suspendDevice()
+        }
+    }
+
     Item {
         focus: true
         Keys.onPressed: function (event) {
+            if (isPowerKey(event.key)) {
+                if (event.isAutoRepeat) { event.accepted = true; return }
+                // Woken by the same button that put it to sleep: clear the
+                // screen rather than immediately sleeping again.
+                if (powerOverlay.mode === "sleep") powerOverlay.mode = ""
+                else powerHoldTimer.restart()
+                event.accepted = true
+                return
+            }
+
             if (event.key === Qt.Key_Home || event.key === Qt.Key_Escape
                 || event.key === Qt.Key_Back) {
                 hardwareBack()
@@ -91,6 +128,17 @@ Window {
                     scrollCard(0.5)
                     event.accepted = true
                 }
+            }
+        }
+
+        Keys.onReleased: function (event) {
+            if (!isPowerKey(event.key) || event.isAutoRepeat) return
+            event.accepted = true
+            // Released before the hold elapsed, so it was a tap.
+            if (powerHoldTimer.running) {
+                powerHoldTimer.stop()
+                powerOverlay.mode = "sleep"
+                powerActTimer.restart()
             }
         }
     }
@@ -2150,6 +2198,55 @@ Window {
                     }
                     MouseArea { anchors.fill: parent; onClicked: wifiOverlay.backspace() }
                 }
+            }
+        }
+    }
+
+    // ==========================================
+    // Power overlay: what the screen is left showing
+    // ==========================================
+    //
+    // e-ink holds its last image with the power off, so this is not a
+    // transient dialog -- it is the picture the tablet wears while asleep or
+    // dead, and the only clue to which of the two it is.
+    Rectangle {
+        id: powerOverlay
+        // "" hidden, "sleep" suspended, "off" powering down.
+        property string mode: ""
+
+        anchors.fill: parent
+        color: "white"
+        visible: mode !== ""
+        z: 300
+
+        // Swallows stray input so a touch in a bag cannot act on the screen
+        // underneath. A deliberate tap wakes from sleep; nothing wakes an
+        // overlay that is on its way to powering off.
+        MouseArea {
+            anchors.fill: parent
+            onClicked: if (powerOverlay.mode === "sleep" && !powerActTimer.running)
+                           powerOverlay.mode = ""
+        }
+
+        Column {
+            anchors.centerIn: parent
+            spacing: 40
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: powerOverlay.mode === "off" ? "Off" : "Asleep"
+                font.family: brandFont
+                font.pixelSize: 120
+                color: "black"
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: powerOverlay.mode === "off" ? "hold power to start"
+                                                  : "press power to wake"
+                font.family: brandFont
+                font.pixelSize: 44
+                color: "#666666"
             }
         }
     }
