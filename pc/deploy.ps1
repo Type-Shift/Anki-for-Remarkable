@@ -229,6 +229,11 @@ Write-Host "    checksum verified"
 Write-Host "==> ensuring boot launcher" -ForegroundColor Cyan
 & ssh @sshOpts "root@$Device" '/home/root/install-launcher.sh install'
 
+# Same reason: /etc/localtime is a symlink on the root filesystem, so an
+# update resets it to UTC. The clock stays correct and reads an hour out in
+# summer, which also moves Anki's day rollover away from the desktop's.
+& ssh @sshOpts "root@$Device" 'timedatectl set-timezone Europe/London'
+
 
 # --- start ------------------------------------------------------------------
 
