@@ -2,15 +2,36 @@
 
 #include <QDebug>
 #include <QProcess>
-#include <QRegularExpression>
 #include <QTimer>
 #include <QVariantMap>
 
 namespace {
-const char *IFACE       = "wlan0";
-constexpr int WPA_TIMEOUT_MS = 5000;
-constexpr int SCAN_WAIT_MS   = 3500;   // wpa_supplicant needs a moment
-constexpr int POLL_MS        = 4000;   // refresh status while the panel is open
+const char *IFACE = "wlan0";
+constexpr int NM_TIMEOUT_MS   = 6000;
+constexpr int JOIN_TIMEOUT_MS = 15000;  // joining waits on association + DHCP
+constexpr int SCAN_WAIT_MS    = 3500;
+constexpr int POLL_MS         = 4000;   // refresh status while the panel is open
+
+// nmcli -t escapes a literal colon inside a field as a backslash-colon, so a
+// plain split on ':' tears an SSID containing one in half.
+QStringList splitTerse(const QString &line)
+{
+    QStringList out;
+    QString cur;
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line.at(i);
+        if (c == QLatin1Char('\\') && i + 1 < line.size()) {
+            cur.append(line.at(++i));
+        } else if (c == QLatin1Char(':')) {
+            out << cur;
+            cur.clear();
+        } else {
+            cur.append(c);
+        }
+    }
+    out << cur;
+    return out;
+}
 }
 
 WifiManager::WifiManager(QObject *parent)
@@ -32,28 +53,31 @@ WifiManager::WifiManager(QObject *parent)
 
 // --- command plumbing -------------------------------------------------------
 
-QString WifiManager::wpa(const QStringList &args, bool *ok)
+QString WifiManager::nm(const QStringList &args, bool *ok, int timeoutMs)
 {
     QProcess p;
-    QStringList full;
-    full << QStringLiteral("-i") << QLatin1String(IFACE);
-    full << args;
-
-    p.start(QStringLiteral("wpa_cli"), full);
-    if (!p.waitForStarted(WPA_TIMEOUT_MS)) {
+    // Arguments go straight to execve, so an SSID or password containing
+    // spaces or quotes needs no escaping and cannot reach a shell.
+    p.start(QStringLiteral("nmcli"), args);
+    if (!p.waitForStarted(NM_TIMEOUT_MS)) {
         if (ok) *ok = false;
-        setWifiError(QStringLiteral("wpa_cli not available on this device"));
+        setWifiError(QStringLiteral("nmcli not available on this device"));
         return QString();
     }
-    if (!p.waitForFinished(WPA_TIMEOUT_MS)) {
+    if (!p.waitForFinished(timeoutMs)) {
         p.kill();
         if (ok) *ok = false;
-        setWifiError(QStringLiteral("wpa_cli timed out"));
+        setWifiError(QStringLiteral("nmcli timed out"));
         return QString();
     }
 
     const QString out = QString::fromUtf8(p.readAllStandardOutput());
-    if (ok) *ok = !out.trimmed().endsWith(QLatin1String("FAIL"));
+    const bool good = (p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0);
+    if (ok) *ok = good;
+    if (!good) {
+        const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+        if (!err.isEmpty()) setWifiError(err.section(QLatin1Char('\n'), -1));
+    }
     return out;
 }
 
@@ -85,48 +109,58 @@ void WifiManager::setWifiError(const QString &e)
 void WifiManager::refreshStatus()
 {
     bool ok = false;
-    const QString out = wpa({QStringLiteral("status")}, &ok);
-    if (!ok && out.isEmpty()) {
+    const QString radio = nm({QStringLiteral("-t"), QStringLiteral("radio"),
+                              QStringLiteral("wifi")}, &ok).trimmed();
+    if (!ok) {
+        setStatusFields(QStringLiteral("UNAVAILABLE"), QString(), QString());
+        return;
+    }
+    if (radio == QLatin1String("disabled")) {
+        setStatusFields(QStringLiteral("DISCONNECTED"), QString(), QString());
+        return;
+    }
+
+    const QString out = nm({QStringLiteral("-t"),
+                            QStringLiteral("-f"),
+                            QStringLiteral("GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS"),
+                            QStringLiteral("device"), QStringLiteral("show"),
+                            QLatin1String(IFACE)}, &ok);
+    if (!ok) {
         setStatusFields(QStringLiteral("UNAVAILABLE"), QString(), QString());
         return;
     }
 
-    QString state, ssid, ip;
+    int deviceState = 0;
+    QString ssid, ip;
     const QStringList lines = out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (const QString &line : lines) {
-        const int eq = line.indexOf(QLatin1Char('='));
-        if (eq < 0) continue;
-        const QString key = line.left(eq).trimmed();
-        const QString val = line.mid(eq + 1).trimmed();
-        if (key == QLatin1String("wpa_state"))  state = val;
-        else if (key == QLatin1String("ssid"))  ssid  = val;
-        else if (key == QLatin1String("ip_address")) ip = val;
+        const QStringList f = splitTerse(line);
+        if (f.size() < 2) continue;
+        const QString key = f.first();
+        const QString val = QStringList(f.mid(1)).join(QLatin1Char(':')).trimmed();
+
+        // "100 (connected)" -- the number is the stable part, the word is
+        // translated and can change between firmware versions.
+        if (key == QLatin1String("GENERAL.STATE"))
+            deviceState = val.section(QLatin1Char(' '), 0, 0).toInt();
+        else if (key == QLatin1String("GENERAL.CONNECTION"))
+            ssid = (val == QLatin1String("--")) ? QString() : val;
+        else if (key.startsWith(QLatin1String("IP4.ADDRESS")))
+            ip = val.section(QLatin1Char('/'), 0, 0);
     }
 
-    if (state.isEmpty()) state = QStringLiteral("DISCONNECTED");
+    // NetworkManager device states: 100 activated, anything from preparing
+    // (40) up to secondaries (90) is on its way, below that is down.
+    QString state;
+    if (deviceState >= 100)     state = QStringLiteral("COMPLETED");
+    else if (deviceState >= 40) state = QStringLiteral("CONNECTING");
+    else                        state = QStringLiteral("DISCONNECTED");
+
     setStatusFields(state, ssid, ip);
 
-    // Bring the radio back by itself after a suspend. xochitl would normally
-    // do this and it is stopped while Anki runs, so a resume otherwise left
-    // the tablet awake but off the network with no sign anything was wrong.
-    if (state == QLatin1String("COMPLETED")) {
-        m_disconnectedPolls = 0;
-        return;
-    }
-    if (state == QLatin1String("SCANNING") || state == QLatin1String("ASSOCIATING") ||
-        state == QLatin1String("ASSOCIATED") || state == QLatin1String("4WAY_HANDSHAKE") ||
-        state == QLatin1String("GROUP_HANDSHAKE")) {
-        return;                       // already on its way up; leave it alone
-    }
-    if (m_userTurnedOff) return;      // they asked for it to be off
-
-    // Two consecutive polls, so a brief drop does not trigger a reconnect
-    // while wpa_supplicant is already handling it.
-    if (++m_disconnectedPolls >= 2) {
-        m_disconnectedPolls = 0;
-        qInfo() << "wifi: disconnected without being asked; reconnecting";
-        wpa({QStringLiteral("reconnect")});
-    }
+    // No reconnect loop here on purpose. The old firmware left that to us;
+    // NetworkManager does it itself, and polling it into a fight produced a
+    // reconnect every eight seconds against a link that was already up.
 }
 
 // --- scanning ---------------------------------------------------------------
@@ -135,13 +169,16 @@ void WifiManager::scan()
 {
     setWifiError(QString());
     setScanning(true);
-    wpa({QStringLiteral("scan")});
+    nm({QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("rescan")});
     m_scanTimer->start(SCAN_WAIT_MS);
 }
 
 void WifiManager::collectScanResults()
 {
-    const QString out = wpa({QStringLiteral("scan_results")});
+    const QString out = nm({QStringLiteral("-t"), QStringLiteral("-f"),
+                            QStringLiteral("SSID,SIGNAL,SECURITY"),
+                            QStringLiteral("device"), QStringLiteral("wifi"),
+                            QStringLiteral("list")});
     rebuildNetworks(out);
     setScanning(false);
     refreshStatus();
@@ -149,30 +186,31 @@ void WifiManager::collectScanResults()
 
 void WifiManager::rebuildNetworks(const QString &scanOutput)
 {
-    // Saved networks, so the UI can offer one-tap reconnect without a password.
+    // Saved connections, so the UI can offer one-tap rejoin without a
+    // password. NetworkManager names a Wi-Fi connection after its SSID.
     QStringList saved;
-    const QString savedOut = wpa({QStringLiteral("list_networks")});
+    const QString savedOut = nm({QStringLiteral("-t"), QStringLiteral("-f"),
+                                 QStringLiteral("NAME,TYPE"),
+                                 QStringLiteral("connection"), QStringLiteral("show")});
     const QStringList savedLines = savedOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (int i = 1; i < savedLines.size(); ++i) {          // skip header row
-        const QStringList f = savedLines.at(i).split(QLatin1Char('\t'));
-        if (f.size() >= 2 && !f.at(1).trimmed().isEmpty())
-            saved << f.at(1).trimmed();
+    for (const QString &line : savedLines) {
+        const QStringList f = splitTerse(line);
+        if (f.size() >= 2 && f.at(1).contains(QLatin1String("wireless")))
+            saved << f.at(0);
     }
 
-    // scan_results columns: bssid / frequency / signal level / flags / ssid
     QMap<QString, QVariantMap> best;
     const QStringList lines = scanOutput.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (int i = 1; i < lines.size(); ++i) {               // skip header row
-        const QStringList f = lines.at(i).split(QLatin1Char('\t'));
-        if (f.size() < 5) continue;
+    for (const QString &line : lines) {
+        const QStringList f = splitTerse(line);
+        if (f.size() < 3) continue;
 
-        const QString ssid = f.at(4).trimmed();
-        if (ssid.isEmpty()) continue;                      // hidden network
+        const QString ssid = f.at(0).trimmed();
+        if (ssid.isEmpty()) continue;                 // hidden network
 
-        const int signal  = f.at(2).trimmed().toInt();
-        const QString flags = f.at(3);
-        const bool secured = flags.contains(QLatin1String("WPA")) ||
-                             flags.contains(QLatin1String("WEP"));
+        // nmcli reports 0-100 quality, not dBm as wpa_cli did.
+        const int signal = f.at(1).trimmed().toInt();
+        const bool secured = !f.at(2).trimmed().isEmpty();
 
         // Same SSID often appears per-band and per-AP; keep the strongest.
         if (best.contains(ssid) && best[ssid].value(QStringLiteral("signal")).toInt() >= signal)
@@ -184,8 +222,8 @@ void WifiManager::rebuildNetworks(const QString &scanOutput)
         n.insert(QStringLiteral("secured"), secured);
         n.insert(QStringLiteral("saved"),   saved.contains(ssid));
         n.insert(QStringLiteral("current"), ssid == m_currentSsid);
-        // -50 excellent, -90 unusable; map to 0-4 bars for the UI.
-        int bars = (signal >= -55) ? 4 : (signal >= -67) ? 3 : (signal >= -75) ? 2 : (signal >= -85) ? 1 : 0;
+        const int bars = (signal >= 80) ? 4 : (signal >= 60) ? 3
+                       : (signal >= 40) ? 2 : (signal >= 20) ? 1 : 0;
         n.insert(QStringLiteral("bars"), bars);
         best.insert(ssid, n);
     }
@@ -208,28 +246,11 @@ void WifiManager::rebuildNetworks(const QString &scanOutput)
 
 // --- joining ----------------------------------------------------------------
 
-int WifiManager::savedNetworkId(const QString &ssid)
-{
-    const QString out = wpa({QStringLiteral("list_networks")});
-    const QStringList lines = out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (int i = 1; i < lines.size(); ++i) {
-        const QStringList f = lines.at(i).split(QLatin1Char('\t'));
-        if (f.size() >= 2 && f.at(1).trimmed() == ssid)
-            return f.at(0).trimmed().toInt();
-    }
-    return -1;
-}
-
 void WifiManager::connectToSaved(const QString &ssid)
 {
     setWifiError(QString());
-    m_userTurnedOff = false;      // asking to join clears any deliberate off
-    const int id = savedNetworkId(ssid);
-    if (id < 0) {
-        setWifiError(QStringLiteral("%1 is not a saved network").arg(ssid));
-        return;
-    }
-    wpa({QStringLiteral("select_network"), QString::number(id)});
+    nm({QStringLiteral("connection"), QStringLiteral("up"),
+        QStringLiteral("id"), ssid}, nullptr, JOIN_TIMEOUT_MS);
     setStatusFields(QStringLiteral("CONNECTING"), ssid, QString());
     QTimer::singleShot(2000, this, &WifiManager::refreshStatus);
 }
@@ -237,73 +258,42 @@ void WifiManager::connectToSaved(const QString &ssid)
 void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
 {
     setWifiError(QString());
-    m_userTurnedOff = false;      // asking to join clears any deliberate off
 
     if (ssid.trimmed().isEmpty()) {
         setWifiError(QStringLiteral("Choose a network first"));
         return;
     }
 
-    // Reuse the saved entry if we already know this network, so repeated
-    // joins don't accumulate duplicates in wpa_supplicant.conf.
-    int id = savedNetworkId(ssid);
-    if (id < 0) {
-        bool ok = false;
-        const QString out = wpa({QStringLiteral("add_network")}, &ok);
-        id = out.trimmed().split(QLatin1Char('\n')).last().trimmed().toInt(&ok);
-        if (!ok || id < 0) {
-            setWifiError(QStringLiteral("Could not create a network entry"));
-            return;
-        }
-    }
+    // "device wifi connect" creates the saved connection as a side effect, so
+    // it survives a reboot and turns up in the saved list next time.
+    QStringList args{QStringLiteral("device"), QStringLiteral("wifi"),
+                     QStringLiteral("connect"), ssid};
+    if (!password.isEmpty())
+        args << QStringLiteral("password") << password;
 
-    // wpa_cli expects string values wrapped in literal double quotes.
-    const QString qSsid = QStringLiteral("\"%1\"").arg(ssid);
-    wpa({QStringLiteral("set_network"), QString::number(id), QStringLiteral("ssid"), qSsid});
-
-    if (password.isEmpty()) {
-        wpa({QStringLiteral("set_network"), QString::number(id),
-             QStringLiteral("key_mgmt"), QStringLiteral("NONE")});
-    } else {
-        const QString qPsk = QStringLiteral("\"%1\"").arg(password);
-        wpa({QStringLiteral("set_network"), QString::number(id),
-             QStringLiteral("key_mgmt"), QStringLiteral("WPA-PSK")});
-        wpa({QStringLiteral("set_network"), QString::number(id),
-             QStringLiteral("psk"), qPsk});
-    }
-
-    wpa({QStringLiteral("enable_network"), QString::number(id)});
-    wpa({QStringLiteral("select_network"), QString::number(id)});
-    // update_config=1 is set, so this persists the network across reboots.
-    wpa({QStringLiteral("save_config")});
-
+    nm(args, nullptr, JOIN_TIMEOUT_MS);
     setStatusFields(QStringLiteral("CONNECTING"), ssid, QString());
-    QTimer::singleShot(3000, this, &WifiManager::refreshStatus);
+    QTimer::singleShot(2000, this, &WifiManager::refreshStatus);
 }
 
 void WifiManager::forgetNetwork(const QString &ssid)
 {
-    const int id = savedNetworkId(ssid);
-    if (id < 0) return;
-    wpa({QStringLiteral("remove_network"), QString::number(id)});
-    wpa({QStringLiteral("save_config")});
+    nm({QStringLiteral("connection"), QStringLiteral("delete"),
+        QStringLiteral("id"), ssid});
     scan();
 }
 
 void WifiManager::disconnectWifi()
 {
-    // Remember this was deliberate, or the auto-reconnect in refreshStatus
-    // would put the radio straight back on.
-    m_userTurnedOff = true;
-    m_disconnectedPolls = 0;
-    wpa({QStringLiteral("disconnect")});
+    // Turning the radio off, not just dropping the link: NetworkManager
+    // would reconnect a merely disconnected interface within seconds.
+    nm({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("off")});
     setStatusFields(QStringLiteral("DISCONNECTED"), QString(), QString());
 }
 
 void WifiManager::reconnectWifi()
 {
-    m_userTurnedOff = false;
-    wpa({QStringLiteral("reconnect")});
+    nm({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("on")});
     setStatusFields(QStringLiteral("CONNECTING"), m_currentSsid, QString());
     QTimer::singleShot(3000, this, &WifiManager::refreshStatus);
 }

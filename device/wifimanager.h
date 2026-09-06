@@ -8,12 +8,15 @@
 // ---------------------------------------------------------------------------
 // WifiManager
 //
-// Wraps wpa_cli so WiFi can be managed from inside the app. Necessary because
+// Wraps nmcli so WiFi can be managed from inside the app. Necessary because
 // running a Qt epaper app requires stopping xochitl, which takes reMarkable's
 // own settings UI down with it -- leaving no other way to join a network.
 //
-// The device runs wpa_supplicant.service with update_config=1, so networks
-// added here are written to /etc/wpa_supplicant.conf and survive a reboot.
+// The 2026-08-27 firmware moved to NetworkManager and starts wpa_supplicant
+// with -u, which serves D-Bus and creates no control socket at all, so the
+// wpa_cli this used to drive fails outright. NetworkManager keeps saved
+// networks under /etc, so joins survive a reboot -- but not a firmware
+// update, which replaces /etc wholesale.
 // ---------------------------------------------------------------------------
 
 class QTimer;
@@ -59,14 +62,14 @@ private slots:
     void collectScanResults();
 
 private:
-    // Runs `wpa_cli -i wlan0 <args>` and returns stdout. ok reports whether
-    // the command ran and did not reply FAIL.
-    QString wpa(const QStringList &args, bool *ok = nullptr);
+    // Runs `nmcli <args>` and returns stdout. ok reports whether it ran and
+    // exited zero; a non-zero exit puts nmcli's own message in wifiError.
+    QString nm(const QStringList &args, bool *ok = nullptr,
+               int timeoutMs = 6000);
 
     void setStatusFields(const QString &state, const QString &ssid, const QString &ip);
     void setScanning(bool s);
     void setWifiError(const QString &e);
-    int  savedNetworkId(const QString &ssid);
     void rebuildNetworks(const QString &scanOutput);
 
     QString      m_status = QStringLiteral("UNKNOWN");
@@ -78,14 +81,6 @@ private:
 
     QTimer *m_scanTimer  = nullptr;
     QTimer *m_pollTimer  = nullptr;
-
-    // Set when the user turns Wi-Fi off from the panel, so the auto-reconnect
-    // below does not immediately undo a deliberate choice.
-    bool m_userTurnedOff = false;
-
-    // Consecutive polls seen disconnected. Reconnecting on the first one
-    // would fight the radio while it is still associating.
-    int m_disconnectedPolls = 0;
 };
 
 #endif // WIFIMANAGER_H
