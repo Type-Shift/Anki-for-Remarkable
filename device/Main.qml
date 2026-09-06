@@ -2234,19 +2234,30 @@ Window {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: powerOverlay.mode === "off" ? "Off" : "Asleep"
+                text: "The Remarkable is "
+                      + (powerOverlay.mode === "off" ? "Off" : "Asleep")
                 font.family: brandFont
-                font.pixelSize: 120
+                font.pixelSize: 96
                 color: "black"
             }
 
+            // Whoever picks the tablet up sees this without unlocking or
+            // waking it: e-ink holds the image with the power off.
             Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: powerOverlay.mode === "off" ? "hold power to start"
-                                                  : "press power to wake"
+                width: powerOverlay.width - 240
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: "Joseph Kirby C
+"
+                      + "kirby.x.joseph@gmail.com
+"
+                      + "j_kirby24@wincoll.ac.uk
+"
+                      + "07301241532"
+                lineHeight: 1.3
                 font.family: brandFont
-                font.pixelSize: 44
-                color: "#666666"
+                font.pixelSize: 46
+                color: "#333333"
             }
         }
     }
