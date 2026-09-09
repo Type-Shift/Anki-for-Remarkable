@@ -3,7 +3,10 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariantList>
+
+#include <functional>
 
 // ---------------------------------------------------------------------------
 // WifiManager
@@ -59,18 +62,26 @@ signals:
     void wifiErrorChanged();
 
 private slots:
-    void collectScanResults();
+    // Status, network list, and a rescan every few ticks.
+    void poll();
 
 private:
-    // Runs `nmcli <args>` and returns stdout. ok reports whether it ran and
-    // exited zero; a non-zero exit puts nmcli's own message in wifiError.
-    QString nm(const QStringList &args, bool *ok = nullptr,
-               int timeoutMs = 6000);
+    // Called with (ok, stdout) once nmcli exits. ok is false on a non-zero
+    // exit, a failure to start, or the timeout; nmcli's own message goes to
+    // wifiError either way.
+    using Handler = std::function<void(bool, const QString &)>;
+
+    // Runs `nmcli <args>` without blocking. Everything here used to run on
+    // the GUI thread via waitForFinished, which stalled the display on every
+    // poll and froze the app outright for the length of a join.
+    void run(const QStringList &args, int timeoutMs = 8000, Handler done = nullptr);
+
+    void refreshNetworks();
 
     void setStatusFields(const QString &state, const QString &ssid, const QString &ip);
     void setScanning(bool s);
     void setWifiError(const QString &e);
-    void rebuildNetworks(const QString &scanOutput);
+    void rebuildNetworks(const QString &scanOutput, const QStringList &saved);
 
     QString      m_status = QStringLiteral("UNKNOWN");
     QString      m_currentSsid;
@@ -79,8 +90,11 @@ private:
     QString      m_wifiError;
     bool         m_scanning = false;
 
-    QTimer *m_scanTimer  = nullptr;
-    QTimer *m_pollTimer  = nullptr;
+    QTimer *m_pollTimer = nullptr;
+
+    // Polls since the last forced rescan, so the list keeps filling in
+    // without the user having to ask for a scan.
+    int m_pollsSinceScan = 0;
 };
 
 #endif // WIFIMANAGER_H

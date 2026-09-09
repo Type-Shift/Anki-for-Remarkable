@@ -1779,6 +1779,12 @@ Window {
             selectedSecured = n.secured
             selectedSaved   = n.saved
             passwordInput   = ""
+            // Tapping the name is the whole gesture when there is nothing to
+            // type: a saved network already has its password and an open one
+            // never had a password to ask for. Only a secured network we have
+            // no credentials for still needs the keyboard.
+            if (n.saved || !n.secured)
+                join()
         }
 
         function typeChar(ch) {
@@ -1949,7 +1955,7 @@ Window {
                 spacing: 0
 
                 Text {
-                    text: "No networks found. Tap scan."
+                    text: wifi.scanning ? "Looking..." : "No networks in range."
                     visible: wifi.networks.length === 0
                     font.family: brandFont
                     font.pixelSize: 40

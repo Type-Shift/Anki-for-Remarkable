@@ -5,12 +5,14 @@
 #include <QTimer>
 #include <QVariantMap>
 
+#include <memory>
+
 namespace {
 const char *IFACE = "wlan0";
-constexpr int NM_TIMEOUT_MS   = 6000;
-constexpr int JOIN_TIMEOUT_MS = 15000;  // joining waits on association + DHCP
-constexpr int SCAN_WAIT_MS    = 3500;
-constexpr int POLL_MS         = 4000;   // refresh status while the panel is open
+constexpr int CMD_TIMEOUT_MS  = 8000;
+constexpr int JOIN_TIMEOUT_MS = 25000;  // association plus DHCP
+constexpr int POLL_MS         = 4000;   // status and the cached network list
+constexpr int RESCAN_EVERY    = 5;      // polls between forced rescans (~20s)
 
 // nmcli -t escapes a literal colon inside a field as a backslash-colon, so a
 // plain split on ':' tears an SSID containing one in half.
@@ -37,48 +39,62 @@ QStringList splitTerse(const QString &line)
 WifiManager::WifiManager(QObject *parent)
     : QObject(parent)
 {
-    m_scanTimer = new QTimer(this);
-    m_scanTimer->setSingleShot(true);
-    connect(m_scanTimer, &QTimer::timeout, this, &WifiManager::collectScanResults);
-
-    // Association and DHCP take a few seconds; poll so the UI reflects
-    // reality without the user having to prod it.
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(POLL_MS);
-    connect(m_pollTimer, &QTimer::timeout, this, &WifiManager::refreshStatus);
+    connect(m_pollTimer, &QTimer::timeout, this, &WifiManager::poll);
     m_pollTimer->start();
 
-    refreshStatus();
+    // The radio stays on. There is no battery case for leaving it off: the
+    // tablet suspends between uses and the chip powers down with it.
+    run({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("on")});
+
+    poll();
 }
 
 // --- command plumbing -------------------------------------------------------
 
-QString WifiManager::nm(const QStringList &args, bool *ok, int timeoutMs)
+void WifiManager::run(const QStringList &args, int timeoutMs, Handler done)
 {
-    QProcess p;
-    // Arguments go straight to execve, so an SSID or password containing
-    // spaces or quotes needs no escaping and cannot reach a shell.
-    p.start(QStringLiteral("nmcli"), args);
-    if (!p.waitForStarted(NM_TIMEOUT_MS)) {
-        if (ok) *ok = false;
-        setWifiError(QStringLiteral("nmcli not available on this device"));
-        return QString();
-    }
-    if (!p.waitForFinished(timeoutMs)) {
-        p.kill();
-        if (ok) *ok = false;
-        setWifiError(QStringLiteral("nmcli timed out"));
-        return QString();
-    }
+    // Asynchronous on purpose. These used to block the GUI thread on
+    // waitForFinished, so every poll stuttered the display and a join froze
+    // the whole app for as long as association and DHCP took -- up to a
+    // quarter of a minute of a tablet that appeared to have crashed.
+    auto *p = new QProcess(this);
 
-    const QString out = QString::fromUtf8(p.readAllStandardOutput());
-    const bool good = (p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0);
-    if (ok) *ok = good;
-    if (!good) {
-        const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
-        if (!err.isEmpty()) setWifiError(err.section(QLatin1Char('\n'), -1));
-    }
-    return out;
+    // errorOccurred and finished can both fire for one process, so the
+    // callback is guarded. Shared rather than raw: freeing the flag on the
+    // first call would leave the second reading freed memory.
+    auto called = std::make_shared<bool>(false);
+    const auto complete = [p, called, done](bool ok, const QString &out) {
+        if (*called) return;
+        *called = true;
+        if (done) done(ok, out);
+        p->deleteLater();
+    };
+
+    connect(p, &QProcess::finished, this,
+            [this, p, complete](int code, QProcess::ExitStatus status) {
+        const QString out = QString::fromUtf8(p->readAllStandardOutput());
+        const bool ok = (status == QProcess::NormalExit && code == 0);
+        if (!ok) {
+            const QString err = QString::fromUtf8(p->readAllStandardError()).trimmed();
+            if (!err.isEmpty()) setWifiError(err.section(QLatin1Char('\n'), -1));
+        }
+        complete(ok, out);
+    });
+
+    connect(p, &QProcess::errorOccurred, this, [this, complete](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart)
+            setWifiError(QStringLiteral("nmcli not available on this device"));
+        complete(false, QString());
+    });
+
+    // A hung nmcli would otherwise leak a process and never call back.
+    QTimer::singleShot(timeoutMs, p, [p]() {
+        if (p->state() != QProcess::NotRunning) p->kill();
+    });
+
+    p->start(QStringLiteral("nmcli"), args);
 }
 
 void WifiManager::setStatusFields(const QString &state, const QString &ssid, const QString &ip)
@@ -104,59 +120,64 @@ void WifiManager::setWifiError(const QString &e)
     emit wifiErrorChanged();
 }
 
+// --- polling ----------------------------------------------------------------
+
+void WifiManager::poll()
+{
+    refreshStatus();
+    refreshNetworks();
+
+    // NetworkManager ages its scan cache out on its own, but only rescans
+    // when something asks. Nudging it periodically is what makes the list
+    // fill in by itself instead of waiting for a tap on "scan".
+    if (++m_pollsSinceScan >= RESCAN_EVERY) {
+        m_pollsSinceScan = 0;
+        run({QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("rescan")});
+    }
+}
+
 // --- status -----------------------------------------------------------------
 
 void WifiManager::refreshStatus()
 {
-    bool ok = false;
-    const QString radio = nm({QStringLiteral("-t"), QStringLiteral("radio"),
-                              QStringLiteral("wifi")}, &ok).trimmed();
-    if (!ok) {
-        setStatusFields(QStringLiteral("UNAVAILABLE"), QString(), QString());
-        return;
-    }
-    if (radio == QLatin1String("disabled")) {
-        setStatusFields(QStringLiteral("DISCONNECTED"), QString(), QString());
-        return;
-    }
+    run({QStringLiteral("-t"), QStringLiteral("-f"),
+         QStringLiteral("GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS"),
+         QStringLiteral("device"), QStringLiteral("show"), QLatin1String(IFACE)},
+        CMD_TIMEOUT_MS,
+        [this](bool ok, const QString &out) {
+        if (!ok) {
+            setStatusFields(QStringLiteral("UNAVAILABLE"), QString(), QString());
+            return;
+        }
 
-    const QString out = nm({QStringLiteral("-t"),
-                            QStringLiteral("-f"),
-                            QStringLiteral("GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS"),
-                            QStringLiteral("device"), QStringLiteral("show"),
-                            QLatin1String(IFACE)}, &ok);
-    if (!ok) {
-        setStatusFields(QStringLiteral("UNAVAILABLE"), QString(), QString());
-        return;
-    }
+        int deviceState = 0;
+        QString ssid, ip;
+        const QStringList lines = out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            const QStringList f = splitTerse(line);
+            if (f.size() < 2) continue;
+            const QString key = f.first();
+            const QString val = QStringList(f.mid(1)).join(QLatin1Char(':')).trimmed();
 
-    int deviceState = 0;
-    QString ssid, ip;
-    const QStringList lines = out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (const QString &line : lines) {
-        const QStringList f = splitTerse(line);
-        if (f.size() < 2) continue;
-        const QString key = f.first();
-        const QString val = QStringList(f.mid(1)).join(QLatin1Char(':')).trimmed();
+            // "100 (connected)" -- the number is the stable part, the word is
+            // translated and can change between firmware versions.
+            if (key == QLatin1String("GENERAL.STATE"))
+                deviceState = val.section(QLatin1Char(' '), 0, 0).toInt();
+            else if (key == QLatin1String("GENERAL.CONNECTION"))
+                ssid = (val == QLatin1String("--")) ? QString() : val;
+            else if (key.startsWith(QLatin1String("IP4.ADDRESS")))
+                ip = val.section(QLatin1Char('/'), 0, 0);
+        }
 
-        // "100 (connected)" -- the number is the stable part, the word is
-        // translated and can change between firmware versions.
-        if (key == QLatin1String("GENERAL.STATE"))
-            deviceState = val.section(QLatin1Char(' '), 0, 0).toInt();
-        else if (key == QLatin1String("GENERAL.CONNECTION"))
-            ssid = (val == QLatin1String("--")) ? QString() : val;
-        else if (key.startsWith(QLatin1String("IP4.ADDRESS")))
-            ip = val.section(QLatin1Char('/'), 0, 0);
-    }
+        // NetworkManager device states: 100 activated, anything from
+        // preparing (40) up to secondaries (90) is on its way, below is down.
+        QString state;
+        if (deviceState >= 100)     state = QStringLiteral("COMPLETED");
+        else if (deviceState >= 40) state = QStringLiteral("CONNECTING");
+        else                        state = QStringLiteral("DISCONNECTED");
 
-    // NetworkManager device states: 100 activated, anything from preparing
-    // (40) up to secondaries (90) is on its way, below that is down.
-    QString state;
-    if (deviceState >= 100)     state = QStringLiteral("COMPLETED");
-    else if (deviceState >= 40) state = QStringLiteral("CONNECTING");
-    else                        state = QStringLiteral("DISCONNECTED");
-
-    setStatusFields(state, ssid, ip);
+        setStatusFields(state, ssid, ip);
+    });
 
     // No reconnect loop here on purpose. The old firmware left that to us;
     // NetworkManager does it itself, and polling it into a fight produced a
@@ -169,36 +190,46 @@ void WifiManager::scan()
 {
     setWifiError(QString());
     setScanning(true);
-    nm({QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("rescan")});
-    m_scanTimer->start(SCAN_WAIT_MS);
+    m_pollsSinceScan = 0;
+    run({QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("rescan")},
+        CMD_TIMEOUT_MS,
+        [this](bool, const QString &) {
+        setScanning(false);
+        refreshNetworks();
+    });
 }
 
-void WifiManager::collectScanResults()
+void WifiManager::refreshNetworks()
 {
-    const QString out = nm({QStringLiteral("-t"), QStringLiteral("-f"),
-                            QStringLiteral("SSID,SIGNAL,SECURITY"),
-                            QStringLiteral("device"), QStringLiteral("wifi"),
-                            QStringLiteral("list")});
-    rebuildNetworks(out);
-    setScanning(false);
-    refreshStatus();
+    // Saved connections first, so the list can mark which need no password.
+    run({QStringLiteral("-t"), QStringLiteral("-f"), QStringLiteral("NAME,TYPE"),
+         QStringLiteral("connection"), QStringLiteral("show")},
+        CMD_TIMEOUT_MS,
+        [this](bool ok, const QString &savedOut) {
+        QStringList saved;
+        if (ok) {
+            const QStringList savedLines =
+                savedOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &line : savedLines) {
+                const QStringList f = splitTerse(line);
+                if (f.size() >= 2 && f.at(1).contains(QLatin1String("wireless")))
+                    saved << f.at(0);
+            }
+        }
+
+        // Reads NetworkManager's cache, so this is cheap enough to poll.
+        run({QStringLiteral("-t"), QStringLiteral("-f"),
+             QStringLiteral("SSID,SIGNAL,SECURITY"),
+             QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("list")},
+            CMD_TIMEOUT_MS,
+            [this, saved](bool listOk, const QString &out) {
+            if (listOk) rebuildNetworks(out, saved);
+        });
+    });
 }
 
-void WifiManager::rebuildNetworks(const QString &scanOutput)
+void WifiManager::rebuildNetworks(const QString &scanOutput, const QStringList &saved)
 {
-    // Saved connections, so the UI can offer one-tap rejoin without a
-    // password. NetworkManager names a Wi-Fi connection after its SSID.
-    QStringList saved;
-    const QString savedOut = nm({QStringLiteral("-t"), QStringLiteral("-f"),
-                                 QStringLiteral("NAME,TYPE"),
-                                 QStringLiteral("connection"), QStringLiteral("show")});
-    const QStringList savedLines = savedOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (const QString &line : savedLines) {
-        const QStringList f = splitTerse(line);
-        if (f.size() >= 2 && f.at(1).contains(QLatin1String("wireless")))
-            saved << f.at(0);
-    }
-
     QMap<QString, QVariantMap> best;
     const QStringList lines = scanOutput.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (const QString &line : lines) {
@@ -238,9 +269,14 @@ void WifiManager::rebuildNetworks(const QString &scanOutput)
         return a.value(QStringLiteral("signal")).toInt() > b.value(QStringLiteral("signal")).toInt();
     });
 
-    m_networks.clear();
+    QVariantList built;
     for (const QVariantMap &n : sorted)
-        m_networks.append(n);
+        built.append(n);
+
+    // Rebuilding an identical list every poll would reset the scroll position
+    // under the user's finger, which is half of what read as stutter.
+    if (built == m_networks) return;
+    m_networks = built;
     emit networksChanged();
 }
 
@@ -249,10 +285,11 @@ void WifiManager::rebuildNetworks(const QString &scanOutput)
 void WifiManager::connectToSaved(const QString &ssid)
 {
     setWifiError(QString());
-    nm({QStringLiteral("connection"), QStringLiteral("up"),
-        QStringLiteral("id"), ssid}, nullptr, JOIN_TIMEOUT_MS);
     setStatusFields(QStringLiteral("CONNECTING"), ssid, QString());
-    QTimer::singleShot(2000, this, &WifiManager::refreshStatus);
+    run({QStringLiteral("connection"), QStringLiteral("up"),
+         QStringLiteral("id"), ssid},
+        JOIN_TIMEOUT_MS,
+        [this](bool, const QString &) { refreshStatus(); });
 }
 
 void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
@@ -271,29 +308,30 @@ void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
     if (!password.isEmpty())
         args << QStringLiteral("password") << password;
 
-    nm(args, nullptr, JOIN_TIMEOUT_MS);
     setStatusFields(QStringLiteral("CONNECTING"), ssid, QString());
-    QTimer::singleShot(2000, this, &WifiManager::refreshStatus);
+    run(args, JOIN_TIMEOUT_MS, [this](bool, const QString &) { refreshStatus(); });
 }
 
 void WifiManager::forgetNetwork(const QString &ssid)
 {
-    nm({QStringLiteral("connection"), QStringLiteral("delete"),
-        QStringLiteral("id"), ssid});
-    scan();
+    run({QStringLiteral("connection"), QStringLiteral("delete"),
+         QStringLiteral("id"), ssid},
+        CMD_TIMEOUT_MS,
+        [this](bool, const QString &) { refreshNetworks(); });
 }
 
 void WifiManager::disconnectWifi()
 {
     // Turning the radio off, not just dropping the link: NetworkManager
     // would reconnect a merely disconnected interface within seconds.
-    nm({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("off")});
     setStatusFields(QStringLiteral("DISCONNECTED"), QString(), QString());
+    run({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("off")});
 }
 
 void WifiManager::reconnectWifi()
 {
-    nm({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("on")});
     setStatusFields(QStringLiteral("CONNECTING"), m_currentSsid, QString());
-    QTimer::singleShot(3000, this, &WifiManager::refreshStatus);
+    run({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("on")},
+        CMD_TIMEOUT_MS,
+        [this](bool, const QString &) { refreshStatus(); });
 }
