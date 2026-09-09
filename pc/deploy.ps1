@@ -94,7 +94,15 @@ function Send-FileChunked {
 }
 
 function Get-Token {
-    if (-not (Test-Path $TokenPath)) { Fail "No GitHub token at $TokenPath" }
+    # gh first. A fine-grained PAT expires, and when this one did the deploy
+    # failed with a bare 401 that says nothing about which credential is
+    # stale; gh refreshes its own and is already signed in for `gh run list`.
+    $t = (& gh auth token 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -eq 0 -and $t) { return $t.Trim() }
+
+    if (-not (Test-Path $TokenPath)) {
+        Fail "No GitHub credential: gh is not signed in and there is no token at $TokenPath"
+    }
     $raw = [System.IO.File]::ReadAllText($TokenPath).TrimStart([char]0xFEFF).Trim()
     $sec = $raw | ConvertTo-SecureString
     return [Runtime.InteropServices.Marshal]::PtrToStringAuto(
