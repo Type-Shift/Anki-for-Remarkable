@@ -52,6 +52,12 @@ function Send-FileChunked {
         [int]$MaxRetries = 6
     )
 
+    # Function scope only. Under the script's 'Stop', the single line scp
+    # writes to stderr when the link drops is a terminating error, so the
+    # retry below never ran: the first dropout killed the whole deploy with
+    # the new build staged but never installed. Exit codes decide here.
+    $ErrorActionPreference = 'Continue'
+
     $chunkDir = Join-Path $env:TEMP 'rmanki-chunks'
     Remove-Item $chunkDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $chunkDir | Out-Null
