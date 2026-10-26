@@ -458,38 +458,44 @@ Window {
                 spacing: 170
 
                 // Anki: a stack of cards.
-                Column {
-                    spacing: 36
+                Item {
+                    width: ankiTile.width
+                    height: ankiTile.height
 
-                    Canvas {
-                        width: 300
-                        height: 300
-                        antialiasing: true
+                    Column {
+                        id: ankiTile
+                        spacing: 36
 
-                        onPaint: {
-                            var ctx = getContext("2d")
-                            ctx.reset()
-                            ctx.strokeStyle = "black"
-                            ctx.lineJoin = "round"
-                            ctx.lineWidth = 6
+                        Canvas {
+                            width: 300
+                            height: 300
+                            antialiasing: true
 
-                            for (var i = 2; i >= 0; i--) {
-                                var o = i * 18
-                                ctx.globalAlpha = (i === 0) ? 1.0 : 0.3
-                                ctx.beginPath()
-                                ctx.rect(40 + o, 28 + o, 180, 232 - o)
-                                ctx.stroke()
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                ctx.strokeStyle = "black"
+                                ctx.lineJoin = "round"
+                                ctx.lineWidth = 6
+
+                                for (var i = 2; i >= 0; i--) {
+                                    var o = i * 18
+                                    ctx.globalAlpha = (i === 0) ? 1.0 : 0.3
+                                    ctx.beginPath()
+                                    ctx.rect(40 + o, 28 + o, 180, 232 - o)
+                                    ctx.stroke()
+                                }
                             }
                         }
-                    }
 
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Anki"
-                        font.family: brandFont
-                        font.pixelSize: 54
-                        font.weight: Font.Light
-                        color: "black"
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "Anki"
+                            font.family: brandFont
+                            font.pixelSize: 54
+                            font.weight: Font.Light
+                            color: "black"
+                        }
                     }
 
                     MouseArea {
@@ -499,51 +505,57 @@ Window {
                 }
 
                 // reMarkable: a page with written lines.
-                Column {
-                    spacing: 36
+                Item {
+                    width: notesTile.width
+                    height: notesTile.height
 
-                    Canvas {
-                        id: notesGlyph
-                        width: 300
-                        height: 300
-                        antialiasing: true
+                    Column {
+                        id: notesTile
+                        spacing: 36
 
-                        onPaint: {
-                            var ctx = getContext("2d")
-                            ctx.reset()
-                            ctx.strokeStyle = "black"
-                            ctx.lineCap = "round"
-                            ctx.lineJoin = "round"
+                        Canvas {
+                            id: notesGlyph
+                            width: 300
+                            height: 300
+                            antialiasing: true
 
-                            ctx.lineWidth = 6
-                            ctx.beginPath()
-                            ctx.rect(56, 28, 188, 232)
-                            ctx.stroke()
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                ctx.strokeStyle = "black"
+                                ctx.lineCap = "round"
+                                ctx.lineJoin = "round"
 
-                            ctx.lineWidth = 5
-                            for (var i = 0; i < 4; i++) {
-                                var y = 86 + i * 44
+                                ctx.lineWidth = 6
                                 ctx.beginPath()
-                                ctx.moveTo(88, y)
-                                ctx.lineTo(212 - i * 22, y)
+                                ctx.rect(56, 28, 188, 232)
                                 ctx.stroke()
+
+                                ctx.lineWidth = 5
+                                for (var i = 0; i < 4; i++) {
+                                    var y = 86 + i * 44
+                                    ctx.beginPath()
+                                    ctx.moveTo(88, y)
+                                    ctx.lineTo(212 - i * 22, y)
+                                    ctx.stroke()
+                                }
                             }
                         }
-                    }
 
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: homeView.confirmExit ? "keep holding..." : "reMarkable"
-                        font.family: brandFont
-                        font.pixelSize: 54
-                        font.weight: Font.Light
-                        color: "black"
-                    }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: homeView.confirmExit ? "keep holding..." : "reMarkable"
+                            font.family: brandFont
+                            font.pixelSize: 54
+                            font.weight: Font.Light
+                            color: "black"
+                        }
 
-                    // Press and hold, not tap. The device log showed
-                    // exitToNotes() firing with nobody touching the tablet:
-                    // stray digitiser events were enough to satisfy a tap,
-                    // dropping out of Anki on their own.
+                        // Press and hold, not tap. The device log showed
+                        // exitToNotes() firing with nobody touching the tablet:
+                        // stray digitiser events were enough to satisfy a tap,
+                        // dropping out of Anki on their own.
+                    }
                     MouseArea {
                         anchors.fill: parent
                         pressAndHoldInterval: 1500
