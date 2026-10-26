@@ -122,14 +122,32 @@ void WifiManager::setWifiError(const QString &e)
 
 // --- polling ----------------------------------------------------------------
 
+void WifiManager::setPanelOpen(bool open)
+{
+    if (m_panelOpen == open) return;
+    m_panelOpen = open;
+    emit panelOpenChanged();
+    if (open) {
+        m_pollsSinceScan = RESCAN_EVERY;   // scan immediately on opening
+        poll();
+    }
+}
+
 void WifiManager::poll()
 {
     refreshStatus();
+
+    // Listing and scanning only while the panel is on screen. Polling them
+    // regardless meant three nmcli processes every four seconds, for a list
+    // nobody was looking at, on a single-core device that was also trying to
+    // render e-ink -- which is most of why the app felt slow.
+    if (!m_panelOpen) return;
+
     refreshNetworks();
 
     // NetworkManager ages its scan cache out on its own, but only rescans
-    // when something asks. Nudging it periodically is what makes the list
-    // fill in by itself instead of waiting for a tap on "scan".
+    // when something asks. Nudging it periodically is what fills the list in
+    // by itself rather than waiting to be told.
     if (++m_pollsSinceScan >= RESCAN_EVERY) {
         m_pollsSinceScan = 0;
         run({QStringLiteral("device"), QStringLiteral("wifi"), QStringLiteral("rescan")});
@@ -318,20 +336,4 @@ void WifiManager::forgetNetwork(const QString &ssid)
          QStringLiteral("id"), ssid},
         CMD_TIMEOUT_MS,
         [this](bool, const QString &) { refreshNetworks(); });
-}
-
-void WifiManager::disconnectWifi()
-{
-    // Turning the radio off, not just dropping the link: NetworkManager
-    // would reconnect a merely disconnected interface within seconds.
-    setStatusFields(QStringLiteral("DISCONNECTED"), QString(), QString());
-    run({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("off")});
-}
-
-void WifiManager::reconnectWifi()
-{
-    setStatusFields(QStringLiteral("CONNECTING"), m_currentSsid, QString());
-    run({QStringLiteral("radio"), QStringLiteral("wifi"), QStringLiteral("on")},
-        CMD_TIMEOUT_MS,
-        [this](bool, const QString &) { refreshStatus(); });
 }

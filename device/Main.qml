@@ -380,8 +380,9 @@ Window {
                     text: device.charging ? (device.batteryLevel + " charging")
                                           : device.batteryLevel
                     font.family: brandFont
-                    font.pixelSize: 40
-                    color: "black"
+                    font.pixelSize: 34
+                    font.weight: Font.Light
+                    color: "#777777"
                 }
             }
 
@@ -417,33 +418,32 @@ Window {
                     id: homeDateText
                     anchors.horizontalCenter: parent.horizontalCenter
                     font.family: brandFont
-                    font.pixelSize: 48
+                    font.pixelSize: 44
                     font.weight: Font.Light
-                    color: "#555555"
+                    color: "#999999"
                 }
             }
 
             // --- Choices --------------------------------------------------
             Column {
                 anchors.top: homeClock.bottom
-                anchors.topMargin: 220
+                anchors.topMargin: 200
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.leftMargin: homeView.sideMargin
                 anchors.rightMargin: homeView.sideMargin
                 spacing: 0
 
-                Rectangle { width: parent.width; height: 2; color: "black" }
-
                 Item {
                     width: parent.width
-                    height: 220
+                    height: 190
 
                     Text {
                         anchors.centerIn: parent
                         text: "Anki"
                         font.family: brandFont
-                        font.pixelSize: 84
+                        font.pixelSize: 72
+                        font.weight: Font.Light
                         color: "black"
                     }
 
@@ -453,13 +453,13 @@ Window {
                     }
                 }
 
-                Rectangle { width: parent.width; height: 1; color: "#BBBBBB" }
+                Rectangle { width: parent.width; height: 1; color: "#E2E2E2" }
 
                 // Sync. Shows what it is doing, since rslib's sync can take a
                 // while on this radio and silence would read as a hang.
                 Item {
                     width: parent.width
-                    height: 220
+                    height: 190
 
                     Text {
                         anchors.centerIn: parent
@@ -469,8 +469,9 @@ Window {
                             return sync.loggedIn ? "Sync" : "Sign in"
                         }
                         font.family: brandFont
-                        font.pixelSize: 84
-                        color: (wifi.connected || sync.busy) ? "black" : "#AAAAAA"
+                        font.pixelSize: 72
+                        font.weight: Font.Light
+                        color: (wifi.connected || sync.busy) ? "black" : "#BBBBBB"
                     }
 
                     Text {
@@ -483,9 +484,9 @@ Window {
                             return sync.status
                         }
                         font.family: brandFont
-                        font.pixelSize: 40
+                        font.pixelSize: 34
                         font.weight: Font.Light
-                        color: "#888888"
+                        color: "#AAAAAA"
                     }
 
                     MouseArea {
@@ -499,17 +500,18 @@ Window {
                     }
                 }
 
-                Rectangle { width: parent.width; height: 1; color: "#BBBBBB" }
+                Rectangle { width: parent.width; height: 1; color: "#E2E2E2" }
 
                 Item {
                     width: parent.width
-                    height: 220
+                    height: 190
 
                     Text {
                         anchors.centerIn: parent
                         text: homeView.confirmExit ? "keep holding..." : "reMarkable"
                         font.family: brandFont
-                        font.pixelSize: 84
+                        font.pixelSize: 72
+                        font.weight: Font.Light
                         color: "black"
                     }
 
@@ -539,8 +541,6 @@ Window {
                         }
                     }
                 }
-
-                Rectangle { width: parent.width; height: 2; color: "black" }
             }
         }
 
@@ -1767,6 +1767,10 @@ Window {
 
         readonly property int sideMargin: 150
 
+        // Scanning and listing are only worth doing while this is on screen.
+        Binding { target: wifi; property: "panelOpen"; value: root.wifiOpen }
+
+        property string forgetSsid: ""
         property string selectedSsid: ""
         property bool   selectedSecured: false
         property bool   selectedSaved: false
@@ -1889,46 +1893,10 @@ Window {
                 bottomPadding: 20
             }
 
-            Rectangle { width: parent.width; height: 2; color: "black" }
-
-            Item {
-                width: parent.width
-                height: 130
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: wifi.connected ? "Turn off" : "Turn on"
-                    font.family: brandFont
-                    font.pixelSize: 52
-                    color: "black"
-                }
-
-                Text {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: wifi.scanning ? "scanning" : "scan"
-                    font.family: brandFont
-                    font.pixelSize: 44
-                    color: "#777777"
-
-                    MouseArea {
-                        anchors.fill: parent
-                        anchors.margins: -40
-                        onClicked: wifi.scan()
-                    }
-                }
-
-                MouseArea {
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    width: parent.width / 2
-                    onClicked: wifi.connected ? wifi.disconnectWifi() : wifi.reconnectWifi()
-                }
-            }
-
-            Rectangle { width: parent.width; height: 2; color: "black" }
+            // No radio switch and no scan button. The radio is meant to stay
+            // on, and the list refreshes itself, so both were controls for
+            // things that now happen anyway.
+            Rectangle { width: parent.width; height: 1; color: "#DDDDDD" }
         }
 
         // --- Network list ---------------------------------------------
@@ -1974,8 +1942,7 @@ Window {
                         Text {
                             anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
-                            text: (modelData.ssid === wifiOverlay.selectedSsid ? "- " : "")
-                                  + modelData.ssid
+                            text: modelData.ssid
                             font.family: brandFont
                             font.pixelSize: 52
                             font.weight: modelData.current ? Font.Normal : Font.Light
@@ -2010,14 +1977,22 @@ Window {
 
                         MouseArea {
                             anchors.fill: parent
+                            // Hold, not tap, to forget: the digitiser throws
+                            // stray touches, and losing a stored password to
+                            // one would be a silent and annoying loss.
+                            pressAndHoldInterval: 1500
                             onClicked: wifiOverlay.selectNetwork(modelData)
+                            onPressAndHold: if (modelData.saved)
+                                                wifiOverlay.forgetSsid = modelData.ssid
                         }
                     }
                 }
             }
         }
 
-        // --- Join / forget row ----------------------------------------
+        // --- Forget confirmation --------------------------------------
+        // Only ever a confirmation now. Tapping a name joins it, so the
+        // Connect button that used to live here was unreachable.
         Item {
             id: joinRow
             anchors.bottom: parent.bottom
@@ -2026,47 +2001,48 @@ Window {
             anchors.right: parent.right
             anchors.leftMargin: wifiOverlay.sideMargin
             anchors.rightMargin: wifiOverlay.sideMargin
-            height: wifiOverlay.selectedSsid === "" ? 0 : 130
-            visible: wifiOverlay.selectedSsid !== "" && !wifiKeyboard.visible
+            height: wifiOverlay.forgetSsid === "" ? 0 : 130
+            visible: wifiOverlay.forgetSsid !== "" && !wifiKeyboard.visible
 
             Rectangle {
                 anchors.top: parent.top
                 width: parent.width
-                height: 2
-                color: "black"
+                height: 1
+                color: "#DDDDDD"
             }
 
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Connect"
+                text: "Forget " + truncate(wifiOverlay.forgetSsid, 22)
                 font.family: brandFont
-                font.pixelSize: 52
+                font.pixelSize: 48
+                font.weight: Font.Light
                 color: "black"
 
                 MouseArea {
                     anchors.fill: parent
                     anchors.margins: -40
-                    onClicked: wifiOverlay.join()
+                    onClicked: {
+                        wifi.forgetNetwork(wifiOverlay.forgetSsid)
+                        wifiOverlay.forgetSsid = ""
+                    }
                 }
             }
 
             Text {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Forget"
-                visible: wifiOverlay.selectedSaved
+                text: "Cancel"
                 font.family: brandFont
-                font.pixelSize: 44
-                color: "#777777"
+                font.pixelSize: 40
+                font.weight: Font.Light
+                color: "#888888"
 
                 MouseArea {
                     anchors.fill: parent
                     anchors.margins: -40
-                    onClicked: {
-                        wifi.forgetNetwork(wifiOverlay.selectedSsid)
-                        wifiOverlay.selectedSsid = ""
-                    }
+                    onClicked: wifiOverlay.forgetSsid = ""
                 }
             }
         }

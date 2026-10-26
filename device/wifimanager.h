@@ -35,6 +35,10 @@ class WifiManager : public QObject
     Q_PROPERTY(bool scanning       READ scanning    NOTIFY scanningChanged)
     Q_PROPERTY(QVariantList networks READ networks  NOTIFY networksChanged)
     Q_PROPERTY(QString wifiError   READ wifiError   NOTIFY wifiErrorChanged)
+    // Set by the UI while the Wi-Fi panel is on screen. Scanning and listing
+    // only matter then; status matters always.
+    Q_PROPERTY(bool panelOpen      READ panelOpen   WRITE setPanelOpen
+                                                    NOTIFY panelOpenChanged)
 
 public:
     explicit WifiManager(QObject *parent = nullptr);
@@ -46,20 +50,21 @@ public:
     bool scanning() const { return m_scanning; }
     QVariantList networks() const { return m_networks; }
     QString wifiError() const { return m_wifiError; }
+    bool panelOpen() const { return m_panelOpen; }
+    void setPanelOpen(bool open);
 
     Q_INVOKABLE void refreshStatus();
     Q_INVOKABLE void scan();
     Q_INVOKABLE void connectToNetwork(const QString &ssid, const QString &password);
     Q_INVOKABLE void connectToSaved(const QString &ssid);
     Q_INVOKABLE void forgetNetwork(const QString &ssid);
-    Q_INVOKABLE void disconnectWifi();
-    Q_INVOKABLE void reconnectWifi();
 
 signals:
     void statusChanged();
     void scanningChanged();
     void networksChanged();
     void wifiErrorChanged();
+    void panelOpenChanged();
 
 private slots:
     // Status, network list, and a rescan every few ticks.
@@ -89,6 +94,7 @@ private:
     QVariantList m_networks;
     QString      m_wifiError;
     bool         m_scanning = false;
+    bool         m_panelOpen = false;
 
     QTimer *m_pollTimer = nullptr;
 

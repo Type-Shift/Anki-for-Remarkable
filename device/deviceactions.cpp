@@ -4,32 +4,47 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QProcess>
 #include <QTimer>
 
 namespace {
-// reMarkable 1 exposes the gauge here; the path differs on other models, so
-// a miss is not an error, just an unknown reading.
-const char *CAPACITY_PATHS[] = {
-    "/sys/class/power_supply/bq27441-0/capacity",
-    "/sys/class/power_supply/max77818_battery/capacity",
-    "/sys/class/power_supply/battery/capacity",
-};
-const char *STATUS_PATHS[] = {
-    "/sys/class/power_supply/bq27441-0/status",
-    "/sys/class/power_supply/max77818_battery/status",
-    "/sys/class/power_supply/battery/status",
-};
-
-QString readFirst(const char *const paths[], int count)
+QString readTrimmed(const QString &path)
 {
-    for (int i = 0; i < count; ++i) {
-        QFile f(QLatin1String(paths[i]));
-        if (f.open(QIODevice::ReadOnly))
-            return QString::fromUtf8(f.readAll()).trimmed();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    return QString::fromUtf8(f.readAll()).trimmed();
+}
+
+// The battery's sysfs directory, found rather than hardcoded.
+//
+// A fixed list of candidate paths read whichever one happened to open first,
+// which is not necessarily the battery: a charger is a power supply too, and
+// a firmware update is free to rename any of them. Ask the kernel which
+// supply is the battery instead.
+QString batteryDir()
+{
+    // Cached because it cannot move while the app runs, and walking sysfs
+    // every minute is wasted work on a single-core device. A failed lookup
+    // caches nothing, so a late-probing driver is still picked up.
+    static QString cached;
+    if (!cached.isEmpty()) return cached;
+
+    const QString base = QStringLiteral("/sys/class/power_supply");
+    const QStringList supplies =
+        QDir(base).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+
+    for (const QString &name : supplies) {
+        const QString dir = base + QLatin1Char('/') + name;
+        if (readTrimmed(dir + QStringLiteral("/type")) != QLatin1String("Battery"))
+            continue;
+        if (!QFile::exists(dir + QStringLiteral("/capacity")))
+            continue;
+        cached = dir;
+        break;
     }
-    return QString();
+    return cached;
 }
 }
 
@@ -44,7 +59,9 @@ DeviceActions::DeviceActions(QObject *parent)
 {
     refreshBattery();
     auto *t = new QTimer(this);
-    t->setInterval(60000);
+    // Half a minute. A minute was long enough that the reading visibly
+    // lagged the real level, especially right after a resume.
+    t->setInterval(30000);
     connect(t, &QTimer::timeout, this, &DeviceActions::refreshBattery);
     t->start();
 
@@ -103,8 +120,11 @@ void DeviceActions::suspendDevice()
 
 void DeviceActions::refreshBattery()
 {
-    const QString cap = readFirst(CAPACITY_PATHS, 3);
-    const QString st  = readFirst(STATUS_PATHS, 3);
+    const QString dir = batteryDir();
+    const QString cap = dir.isEmpty() ? QString()
+                                      : readTrimmed(dir + QStringLiteral("/capacity"));
+    const QString st  = dir.isEmpty() ? QString()
+                                      : readTrimmed(dir + QStringLiteral("/status"));
 
     const QString level = cap.isEmpty() ? QStringLiteral("?") : cap + QStringLiteral("%");
     const bool chg = st.compare(QLatin1String("Charging"), Qt::CaseInsensitive) == 0;
