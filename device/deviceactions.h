@@ -1,6 +1,7 @@
 #ifndef DEVICEACTIONS_H
 #define DEVICEACTIONS_H
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 
@@ -55,6 +56,10 @@ private slots:
 private:
     QString m_batteryLevel = QStringLiteral("?");
     bool    m_charging = false;
+
+    // Time since the last sysfs read, so waking can refresh without a
+    // suspended poll timer having to catch up first.
+    QElapsedTimer m_sinceBattery;
 
     QTimer *m_idleTimer = nullptr;
 };

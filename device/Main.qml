@@ -191,6 +191,37 @@ Window {
 
         }
 
+        // Sync lives here rather than on the launcher: it acts on the decks
+        // on this page, and the launcher is for opening apps.
+        Text {
+            anchors.right: parent.right
+            anchors.rightMargin: 60
+            anchors.verticalCenter: parent.verticalCenter
+            visible: anki.currentState === "DECKS"
+            text: {
+                if (sync.busy)       return sync.status
+                if (!wifi.connected) return "no Wi-Fi"
+                if (!sync.loggedIn)  return "Sign in"
+                if (sync.lastError !== "") return "Sync failed"
+                return "Sync"
+            }
+            font.family: brandFont
+            font.pixelSize: 48
+            font.weight: Font.Light
+            color: (wifi.connected || sync.busy) ? "black" : "#BBBBBB"
+
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -40
+                enabled: wifi.connected && !sync.busy
+                onClicked: {
+                    if (!sync.loggedIn)           root.syncLoginOpen = true
+                    else if (sync.fullSyncNeeded) root.fullSyncAskOpen = true
+                    else                          sync.sync()
+                }
+            }
+        }
+
         // Deliberately nothing else here. The title, the remaining counter,
         // the progress bar and the rule below them were all furniture; the
         // deck list and the card say what is going on without them.
@@ -275,8 +306,9 @@ Window {
 
         // --- View: Home (launcher) ---
         //
-        // Stripped to the essentials: status at the top, a clock, and two
-        // ways to go. Nothing else earns its place on a launcher.
+        // A launcher: what the tablet is doing along the top, and the two
+        // apps it can open. Sync moved onto the Anki page, where the decks
+        // it syncs actually live.
         Item {
             id: homeView
             anchors.fill: parent
@@ -285,16 +317,12 @@ Window {
             readonly property int sideMargin: 150
 
             // Handing the screen to xochitl quits Anki and needs a reboot to
-            // undo, so it takes two taps. A single stray touch on e-ink must
-            // not be able to throw you out of the app.
+            // undo, so it takes a deliberate hold rather than a tap.
             property bool confirmExit: false
 
-            Timer {
-                id: confirmTimer
-                interval: 5000
-                // Timer is not an Item and has no `parent` property, so this
-                // must reference the view by id.
-                onTriggered: homeView.confirmExit = false
+            function statusLine() {
+                return Qt.formatTime(new Date(), "HH:mm") + "   "
+                     + device.batteryLevel + (device.charging ? " charging" : "")
             }
 
             // --- Status strip ---------------------------------------------
@@ -306,7 +334,7 @@ Window {
                 anchors.right: parent.right
                 anchors.leftMargin: homeView.sideMargin
                 anchors.rightMargin: homeView.sideMargin
-                height: 70
+                height: 86
 
                 // Wi-Fi state as the familiar fan symbol, drawn rather than
                 // set in text: no font on the device carries a Wi-Fi glyph.
@@ -367,82 +395,99 @@ Window {
                     MouseArea {
                         anchors.fill: parent
                         anchors.margins: -30      // comfortable tap target
-                        onClicked: {
-                            root.wifiOpen = true
-                            wifi.scan()
-                        }
+                        onClicked: root.wifiOpen = true
                     }
                 }
 
-                Text {
+                // Time and charge together in the corner, so the middle of
+                // the page is left to the apps.
+                Column {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: device.charging ? (device.batteryLevel + " charging")
-                                          : device.batteryLevel
-                    font.family: brandFont
-                    font.pixelSize: 34
-                    font.weight: Font.Light
-                    color: "#777777"
-                }
-            }
-
-            // --- Clock ----------------------------------------------------
-            Column {
-                id: homeClock
-                anchors.centerIn: parent
-                anchors.verticalCenterOffset: -220
-                spacing: 10
-
-                Text {
-                    id: homeClockText
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    font.family: brandFont
-                    font.pixelSize: 240
-                    font.weight: Font.Light
-                    color: "black"
-
-                    Timer {
-                        interval: 10000
-                        running: true
-                        repeat: true
-                        triggeredOnStart: true
-                        onTriggered: {
-                            var d = new Date()
-                            homeClockText.text = Qt.formatTime(d, "HH:mm")
-                            homeDateText.text  = Qt.formatDate(d, "dddd d MMMM")
-                        }
-                    }
-                }
-
-                Text {
-                    id: homeDateText
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    font.family: brandFont
-                    font.pixelSize: 44
-                    font.weight: Font.Light
-                    color: "#999999"
-                }
-            }
-
-            // --- Choices --------------------------------------------------
-            Column {
-                anchors.top: homeClock.bottom
-                anchors.topMargin: 200
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.leftMargin: homeView.sideMargin
-                anchors.rightMargin: homeView.sideMargin
-                spacing: 0
-
-                Item {
-                    width: parent.width
-                    height: 190
+                    spacing: 4
 
                     Text {
-                        anchors.centerIn: parent
+                        id: homeClockText
+                        anchors.right: parent.right
+                        text: homeView.statusLine()
+                        font.family: brandFont
+                        font.pixelSize: 46
+                        font.weight: Font.Light
+                        color: "black"
+
+                        Timer {
+                            interval: 10000
+                            running: true
+                            repeat: true
+                            triggeredOnStart: true
+                            onTriggered: {
+                                homeClockText.text = homeView.statusLine()
+                                homeDateText.text  = Qt.formatDate(new Date(), "ddd d MMM")
+                            }
+                        }
+
+                        // A charge reading that lands between ticks would
+                        // otherwise sit stale for up to ten seconds.
+                        Connections {
+                            target: device
+                            function onBatteryChanged() {
+                                homeClockText.text = homeView.statusLine()
+                            }
+                        }
+                    }
+
+                    Text {
+                        id: homeDateText
+                        anchors.right: parent.right
+                        text: Qt.formatDate(new Date(), "ddd d MMM")
+                        font.family: brandFont
+                        font.pixelSize: 32
+                        font.weight: Font.Light
+                        color: "#999999"
+                    }
+                }
+            }
+
+            // --- Apps -----------------------------------------------------
+            // Two tiles, written out twice rather than factored into a
+            // component: a reusable one would need its own QML file and a
+            // function-valued property for the glyph, which is more
+            // machinery than two icons are worth.
+            Row {
+                anchors.centerIn: parent
+                spacing: 170
+
+                // Anki: a stack of cards.
+                Column {
+                    spacing: 36
+
+                    Canvas {
+                        width: 300
+                        height: 300
+                        antialiasing: true
+
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.reset()
+                            ctx.strokeStyle = "black"
+                            ctx.lineJoin = "round"
+                            ctx.lineWidth = 6
+
+                            for (var i = 2; i >= 0; i--) {
+                                var o = i * 18
+                                ctx.globalAlpha = (i === 0) ? 1.0 : 0.3
+                                ctx.beginPath()
+                                ctx.rect(40 + o, 28 + o, 180, 232 - o)
+                                ctx.stroke()
+                            }
+                        }
+                    }
+
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
                         text: "Anki"
                         font.family: brandFont
-                        font.pixelSize: 72
+                        font.pixelSize: 54
                         font.weight: Font.Light
                         color: "black"
                     }
@@ -453,88 +498,59 @@ Window {
                     }
                 }
 
-                Rectangle { width: parent.width; height: 1; color: "#E2E2E2" }
+                // reMarkable: a page with written lines.
+                Column {
+                    spacing: 36
 
-                // Sync. Shows what it is doing, since rslib's sync can take a
-                // while on this radio and silence would read as a hang.
-                Item {
-                    width: parent.width
-                    height: 190
+                    Canvas {
+                        id: notesGlyph
+                        width: 300
+                        height: 300
+                        antialiasing: true
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: {
-                            if (sync.busy) return sync.status
-                            if (!wifi.connected) return "Sync"
-                            return sync.loggedIn ? "Sync" : "Sign in"
-                        }
-                        font.family: brandFont
-                        font.pixelSize: 72
-                        font.weight: Font.Light
-                        color: (wifi.connected || sync.busy) ? "black" : "#BBBBBB"
-                    }
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.reset()
+                            ctx.strokeStyle = "black"
+                            ctx.lineCap = "round"
+                            ctx.lineJoin = "round"
 
-                    Text {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: {
-                            if (sync.busy) return ""
-                            if (!wifi.connected) return "no Wi-Fi"
-                            if (sync.lastError !== "") return "failed"
-                            return sync.status
-                        }
-                        font.family: brandFont
-                        font.pixelSize: 34
-                        font.weight: Font.Light
-                        color: "#AAAAAA"
-                    }
+                            ctx.lineWidth = 6
+                            ctx.beginPath()
+                            ctx.rect(56, 28, 188, 232)
+                            ctx.stroke()
 
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: wifi.connected && !sync.busy
-                        onClicked: {
-                            if (!sync.loggedIn)          root.syncLoginOpen = true
-                            else if (sync.fullSyncNeeded) root.fullSyncAskOpen = true
-                            else                          sync.sync()
+                            ctx.lineWidth = 5
+                            for (var i = 0; i < 4; i++) {
+                                var y = 86 + i * 44
+                                ctx.beginPath()
+                                ctx.moveTo(88, y)
+                                ctx.lineTo(212 - i * 22, y)
+                                ctx.stroke()
+                            }
                         }
                     }
-                }
-
-                Rectangle { width: parent.width; height: 1; color: "#E2E2E2" }
-
-                Item {
-                    width: parent.width
-                    height: 190
 
                     Text {
-                        anchors.centerIn: parent
+                        anchors.horizontalCenter: parent.horizontalCenter
                         text: homeView.confirmExit ? "keep holding..." : "reMarkable"
                         font.family: brandFont
-                        font.pixelSize: 72
+                        font.pixelSize: 54
                         font.weight: Font.Light
                         color: "black"
                     }
 
                     // Press and hold, not tap. The device log showed
                     // exitToNotes() firing with nobody touching the tablet:
-                    // stray digitiser events were hitting this row often
-                    // enough to satisfy even a two-tap confirmation, dropping
-                    // out of Anki and letting the tablet sleep. A sustained
-                    // hold is something spurious touches do not produce.
+                    // stray digitiser events were enough to satisfy a tap,
+                    // dropping out of Anki on their own.
                     MouseArea {
                         anchors.fill: parent
                         pressAndHoldInterval: 1500
 
-                        onPressed: {
-                            homeView.confirmExit = true
-                            confirmTimer.stop()
-                        }
-                        onReleased: {
-                            homeView.confirmExit = false
-                        }
-                        onCanceled: {
-                            homeView.confirmExit = false
-                        }
+                        onPressed:  homeView.confirmExit = true
+                        onReleased: homeView.confirmExit = false
+                        onCanceled: homeView.confirmExit = false
                         onPressAndHold: {
                             homeView.confirmExit = false
                             device.exitToNotes()
@@ -543,6 +559,7 @@ Window {
                 }
             }
         }
+
 
         // --- View: Done ---
         Item {

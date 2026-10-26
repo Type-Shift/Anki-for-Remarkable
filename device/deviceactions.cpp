@@ -5,6 +5,7 @@
 #include <QGuiApplication>
 #include <QDebug>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QProcess>
 #include <QTimer>
@@ -87,6 +88,12 @@ bool DeviceActions::eventFilter(QObject *watched, QEvent *event)
     case QEvent::MouseMove:
     case QEvent::KeyPress:
         if (m_idleTimer) m_idleTimer->start();   // restart the countdown
+        // The poll timer is frozen while the device is suspended, so the
+        // first thing seen on waking was a reading taken before the sleep --
+        // hours stale after a night on the shelf. Re-read on the touch that
+        // woke it, throttled so a scroll does not hammer sysfs.
+        if (!m_sinceBattery.isValid() || m_sinceBattery.elapsed() > 15000)
+            refreshBattery();
         break;
     default:
         break;
@@ -120,6 +127,8 @@ void DeviceActions::suspendDevice()
 
 void DeviceActions::refreshBattery()
 {
+    m_sinceBattery.restart();
+
     const QString dir = batteryDir();
     const QString cap = dir.isEmpty() ? QString()
                                       : readTrimmed(dir + QStringLiteral("/capacity"));
