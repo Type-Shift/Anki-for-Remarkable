@@ -33,9 +33,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib-device.ps1')
 
 $BackupDir = Join-Path $env:USERPROFILE 'rmanki-offline\backups'
-$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20',
-             '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=8',
-             '-o','StrictHostKeyChecking=accept-new')
+$sshOpts = Get-RmSshOpts
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 
@@ -57,6 +55,10 @@ if (-not $Device) { Fail "Tablet not found. Wake it, or pass -Device <ip>." }
 if (-not (Test-NetConnection -ComputerName $Device -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) {
     Fail "Found $Device but SSH is not answering."
 }
+
+# A firmware update gives the tablet new SSH host keys. Clear the old
+# entry now, so the first real command does not fail on it.
+[void](Reset-RmHostKey $Device)
 Write-Host "    $Device"
 Save-RmAddress $Device
 

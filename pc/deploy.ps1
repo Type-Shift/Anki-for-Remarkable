@@ -2,6 +2,7 @@
     Fetch the latest CI-built binary and install it on the reMarkable.
 
         .\deploy.ps1                 # deploy app + scripts, then start it
+        .\deploy.ps1 -LauncherOnly   # after a firmware update: just restore the launcher
         .\deploy.ps1 -RemoveLauncher  # go back to a stock reMarkable
 
     Finds the tablet by MAC, so it works on school Wi-Fi, at home, or on a
@@ -13,11 +14,16 @@
 [CmdletBinding()]
 param(
     [string]$Device = '',
+    [switch]$LauncherOnly,
     [switch]$RemoveLauncher,
     [switch]$NoStart
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Device discovery and the SSH options live in one place so sync and
+# deploy cannot drift apart.
+. (Join-Path $PSScriptRoot 'lib-device.ps1')
 
 $Repo      = 'Type-Shift/Anki-for-Remarkable'
 $DeviceMac = 'c0-84-7d-38-83-51'
@@ -25,11 +31,7 @@ $TokenPath = "$env:LOCALAPPDATA\rmanki-offline\gh-token.txt"
 $CachePath = "$env:LOCALAPPDATA\rmanki-offline\last-ip.txt"
 $DeviceDir = Join-Path $PSScriptRoot '..\device'
 
-# accept-new: the tablet's IP changes with its DHCP lease, and an unknown
-# address otherwise fails with "Host key verification failed" under BatchMode.
-# Still refuses a CHANGED key for a known host, so this is not blanket trust.
-$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=20','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=8',
-             '-o','StrictHostKeyChecking=accept-new')
+$sshOpts = Get-RmSshOpts
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 
@@ -115,8 +117,6 @@ function Get-Token {
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
 }
 
-# Device discovery lives in one place so sync and deploy cannot drift apart.
-. (Join-Path $PSScriptRoot 'lib-device.ps1')
 # --- locate ----------------------------------------------------------------
 
 Write-Host "==> locating tablet" -ForegroundColor Cyan
@@ -131,12 +131,45 @@ Write-Host "    $Device"
 New-Item -ItemType Directory -Force -Path (Split-Path $CachePath) | Out-Null
 Save-RmAddress $Device
 
+# A firmware update gives the tablet new SSH host keys. Clear the old
+# entry now, so the first real command does not fail on it.
+[void](Reset-RmHostKey $Device)
+
 # --- removal short-circuit --------------------------------------------------
 
 if ($RemoveLauncher) {
     Write-Host "==> removing boot launcher" -ForegroundColor Cyan
     & ssh @sshOpts "root@$Device" '/home/root/install-launcher.sh uninstall'
     exit $LASTEXITCODE
+}
+
+# --- launcher-only short-circuit --------------------------------------------
+
+# A firmware update wipes /etc but leaves /home/root, so the app is still
+# installed and only the unit that starts it is gone. Re-running the whole
+# deploy fixes it, but downloads and pushes 29 MB over the tablet's Wi-Fi to
+# replace a binary that was never lost. This is the same repair without the
+# transfer.
+if ($LauncherOnly) {
+    Write-Host "==> restoring boot launcher" -ForegroundColor Cyan
+    & scp @sshOpts `
+        (Join-Path $DeviceDir 'run-anki.sh') `
+        (Join-Path $DeviceDir 'install-launcher.sh') `
+        (Join-Path $DeviceDir 'anki-launcher.service') `
+        "root@${Device}:/home/root/"
+    if ($LASTEXITCODE -ne 0) { Fail "Script transfer failed." }
+
+    & ssh @sshOpts "root@$Device" 'chmod +x /home/root/run-anki.sh /home/root/install-launcher.sh; /home/root/install-launcher.sh install; timedatectl set-timezone Europe/London'
+    if ($LASTEXITCODE -ne 0) { Fail "Could not install the launcher." }
+
+    if (-not $NoStart) {
+        Write-Host "==> starting app" -ForegroundColor Cyan
+        & ssh @sshOpts "root@$Device" 'systemctl restart anki-launcher'
+    }
+    & ssh @sshOpts "root@$Device" '/home/root/install-launcher.sh status'
+    Write-Host ""
+    Write-Host "Launcher restored." -ForegroundColor Green
+    exit 0
 }
 
 # --- fetch artifact ---------------------------------------------------------

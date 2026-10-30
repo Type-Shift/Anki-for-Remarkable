@@ -39,11 +39,7 @@ $workDir = Join-Path $PSScriptRoot '..'
 $queue   = Join-Path $workDir 'queue.json'
 $batch   = Join-Path $workDir 'batch.json'
 
-# accept-new: the tablet's IP changes with its DHCP lease, and an unknown
-# address otherwise fails with "Host key verification failed" under BatchMode.
-# Still refuses a CHANGED key for a known host, so this is not blanket trust.
-$sshOpts = @('-o','BatchMode=yes','-o','ConnectTimeout=15',
-             '-o','StrictHostKeyChecking=accept-new')
+$sshOpts = Get-RmSshOpts
 
 function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 
@@ -59,6 +55,10 @@ if (-not $Device) {
         Fail "Could not find the tablet on any connected network. Wake it, check Wi-Fi is on, or pass -Device <ip>."
     }
 }
+
+# A firmware update gives the tablet new SSH host keys. Clear the old
+# entry now, so the first real command does not fail on it.
+[void](Reset-RmHostKey $Device)
 Write-Host "    $Device"
 
 if (-not (Test-NetConnection -ComputerName $Device -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) {
