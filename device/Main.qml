@@ -574,99 +574,46 @@ Window {
 
 
         // --- View: Done ---
+        //
+        // Stripped to what is true. The panel here used to explain the batch
+        // workflow -- answers "waiting for your PC", cards arriving by
+        // sync.ps1 -- none of which has been how this works since rslib
+        // started scheduling on the device.
         Item {
             anchors.fill: parent
             visible: anki.currentState === "DONE"
 
             Column {
                 anchors.centerIn: parent
-                spacing: 50
+                spacing: 60
 
                 Text {
-                    text: "Congratulations!"
-                    font.family: defaultFont
+                    text: "Deck finished"
+                    font.family: brandFont
                     font.pixelSize: largeFontSize
-                    font.bold: true
+                    font.weight: Font.Light
                     color: "black"
                     anchors.horizontalCenter: parent.horizontalCenter
                 }
 
                 Text {
-                    text: "You've finished every card sent to this device."
-                    font.family: defaultFont
+                    text: "Reviewed " + anki.cardsReviewed
+                          + (anki.cardsReviewed === 1 ? " card" : " cards")
+                    font.family: brandFont
                     font.pixelSize: normalFontSize
-                    color: "black"
-                    anchors.horizontalCenter: parent.horizontalCenter
-                }
-
-                Text {
-                    text: "Reviewed " + anki.cardsReviewed + " card(s)."
-                    font.family: defaultFont
-                    font.pixelSize: normalFontSize
-                    color: "black"
+                    font.weight: Font.Light
+                    color: "#777777"
                     anchors.horizontalCenter: parent.horizontalCenter
                     visible: anki.cardsReviewed > 0
                 }
 
-                // The crucial bit that was missing: say what to do next.
-                // Finishing a batch used to loop straight back to this screen
-                // with no explanation and no way forward.
-                Rectangle {
-                    width: 1100
-                    height: 220
-                    radius: 20
-                    color: "#F2F2F2"
-                    border.color: "black"
-                    border.width: 3
-                    anchors.horizontalCenter: parent.horizontalCenter
-
-                    Column {
-                        anchors.centerIn: parent
-                        width: parent.width - 80
-                        spacing: 14
-
-                        Text {
-                            text: anki.pendingAnswers > 0
-                                  ? (anki.pendingAnswers + " answer(s) saved, waiting for your PC")
-                                  : "All answers have been collected by your PC"
-                            font.family: defaultFont
-                            font.pixelSize: smallFontSize
-                            font.bold: true
-                            color: "black"
-                            wrapMode: Text.WordWrap
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-
-                        Text {
-                            text: "To get more cards, connect to Wi-Fi and run sync.ps1 on your PC. New cards appear here automatically."
-                            font.family: defaultFont
-                            font.pixelSize: smallFontSize
-                            color: "#444444"
-                            wrapMode: Text.WordWrap
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-
-                        Text {
-                            text: anki.batchInfo
-                            font.family: defaultFont
-                            font.pixelSize: smallFontSize
-                            color: "#777777"
-                            wrapMode: Text.WordWrap
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-                    }
-                }
-
-                Row {
-                    spacing: 40
+                Item {
+                    width: 420
+                    height: 110
                     anchors.horizontalCenter: parent.horizontalCenter
 
                     Rectangle {
-                        width: 520
-                        height: 110
+                        anchors.fill: parent
                         radius: 24
                         border.color: "black"
                         border.width: 3
@@ -674,47 +621,21 @@ Window {
 
                         Text {
                             anchors.centerIn: parent
-                            text: "Check for new cards"
-                            font.family: defaultFont
+                            text: "Deck list"
+                            font.family: brandFont
                             font.pixelSize: normalFontSize
                             color: "black"
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: anki.checkForNewCards()
                         }
                     }
 
-                    Rectangle {
-                        width: 300
-                        height: 110
-                        radius: 24
-                        border.color: "black"
-                        border.width: 3
-                        color: "white"
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "Wi-Fi"
-                            font.family: defaultFont
-                            font.pixelSize: normalFontSize
-                            color: "black"
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: {
-                                root.wifiOpen = true
-                                wifi.scan()
-                            }
-                        }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: anki.loadDecks()
                     }
                 }
             }
         }
+
 
         // --- View: Deck Explorer ---
         Item {

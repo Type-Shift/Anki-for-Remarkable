@@ -178,8 +178,13 @@ void OfflineAnkiClient::loadDecks()
     // like the app deciding to open itself.
     if (m_suppressNavigation) return;
 
-    setCurrentState(totalDue > 0 ? QStringLiteral("DECKS")
-                                 : QStringLiteral("DONE"));
+    // Always the deck list. This used to jump to DONE whenever nothing was
+    // due, which made DONE inescapable: both ways out of that screen -- the
+    // hardware Home key and the header's back arrow -- call loadDecks(), so
+    // every exit led straight back in and the only way out was restarting
+    // the app. DONE belongs to the end of a study session, and
+    // showNextCard() already sets it there when a deck runs dry.
+    setCurrentState(QStringLiteral("DECKS"));
 }
 
 void OfflineAnkiClient::refreshDecks()
