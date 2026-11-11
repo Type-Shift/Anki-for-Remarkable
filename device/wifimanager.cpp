@@ -307,7 +307,19 @@ void WifiManager::connectToSaved(const QString &ssid)
     run({QStringLiteral("connection"), QStringLiteral("up"),
          QStringLiteral("id"), ssid},
         JOIN_TIMEOUT_MS,
-        [this](bool, const QString &) { refreshStatus(); });
+        [this, ssid](bool ok, const QString &) {
+            // Say what to do about it. A hotspot that regenerates its key
+            // leaves a saved profile that can never succeed, and tapping a
+            // saved network goes straight to this path without offering the
+            // keyboard -- so without this the only cure is a gesture the
+            // user has no reason to know exists.
+            if (!ok)
+                setWifiError(QStringLiteral(
+                    "Could not join %1. If its password has changed, hold the "
+                    "name to forget it, then tap it to type the new one.")
+                                 .arg(ssid));
+            refreshStatus();
+        });
 }
 
 void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
@@ -319,6 +331,28 @@ void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
         return;
     }
 
+    setStatusFields(QStringLiteral("CONNECTING"), ssid, QString());
+
+    if (password.isEmpty()) {
+        joinNow(ssid, password);
+        return;
+    }
+
+    // A typed password means the stored one is wrong or missing. nmcli's
+    // "device wifi connect" reuses an existing profile for the SSID and
+    // ignores the password argument, so the old key would be retried however
+    // many times the new one was typed. Drop the stale profile first; the
+    // delete failing is the ordinary case of there not being one.
+    run({QStringLiteral("connection"), QStringLiteral("delete"),
+         QStringLiteral("id"), ssid},
+        CMD_TIMEOUT_MS,
+        [this, ssid, password](bool, const QString &) {
+            joinNow(ssid, password);
+        });
+}
+
+void WifiManager::joinNow(const QString &ssid, const QString &password)
+{
     // "device wifi connect" creates the saved connection as a side effect, so
     // it survives a reboot and turns up in the saved list next time.
     QStringList args{QStringLiteral("device"), QStringLiteral("wifi"),
@@ -326,7 +360,6 @@ void WifiManager::connectToNetwork(const QString &ssid, const QString &password)
     if (!password.isEmpty())
         args << QStringLiteral("password") << password;
 
-    setStatusFields(QStringLiteral("CONNECTING"), ssid, QString());
     run(args, JOIN_TIMEOUT_MS, [this](bool, const QString &) { refreshStatus(); });
 }
 

@@ -83,6 +83,10 @@ private:
 
     void refreshNetworks();
 
+    // The actual `device wifi connect`, split out so connectToNetwork can
+    // run it after clearing a stale profile.
+    void joinNow(const QString &ssid, const QString &password);
+
     void setStatusFields(const QString &state, const QString &ssid, const QString &ip);
     void setScanning(bool s);
     void setWifiError(const QString &e);
