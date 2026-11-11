@@ -11,6 +11,10 @@ $script:RM_MAC   = 'c0-84-7d-38-83-51'
 $script:RM_CACHE = "$env:LOCALAPPDATA\rmanki-offline\last-ip.txt"
 $script:RM_PORT  = 22
 
+# reMarkable's USB ethernet gadget answers on this address on every device
+# and every firmware. It is a constant, not a lease.
+$script:RM_USB   = '10.11.99.1'
+
 # How every script reaches the tablet. One definition because three scripts
 # each kept their own copy, all three made the same call about host keys,
 # and all three broke on the same day.
@@ -125,6 +129,24 @@ function Test-RmReachable {
 
 function Find-RemarkableDevice {
     param([switch]$Quiet)
+
+    # A USB cable first, and deliberately before everything else.
+    #
+    # Every check below matches $RM_MAC, which belongs to wlan0. The USB
+    # gadget has a MAC of its own, so a tablet on a cable was found by the
+    # sweep and then rejected as "not a reMarkable" -- the cable has never
+    # worked with these scripts. It matters most precisely when it was least
+    # available: a weak signal is what stops a 40 MB push, and the wire does
+    # not care about signal.
+    #
+    # Nothing else in the world sits at 10.11.99.1 answering SSH, so the
+    # fixed address is identification enough on its own.
+    if (Test-RmReachable $script:RM_USB) {
+        if (-not $Quiet) {
+            Write-Host "    found over USB at $script:RM_USB" -ForegroundColor DarkGray
+        }
+        return $script:RM_USB
+    }
 
     # An ARP entry outlives the device being awake, so it is a hint, not an
     # answer: a sleeping tablet was reported as found and every command after
