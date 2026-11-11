@@ -54,6 +54,19 @@ Window {
         return s.length > maxLen ? s.substring(0, maxLen) + "..." : s
     }
 
+    // rslib hands errors over in Rust's Debug formatting, e.g.
+    //   SyncError { source: SyncError { info: "...", kind: ServerMessage } }
+    // The part worth reading is inside info: AnkiWeb writes a plain sentence
+    // there saying exactly what to do about it.
+    function readableError(raw) {
+        if (raw === "") return ""
+        var m = /info: "([^"]*)"/.exec(raw)
+        if (m && m[1] !== "") return m[1]
+        var k = /kind: (\w+)/.exec(raw)
+        if (k && k[1] === "Timeout") return "AnkiWeb did not respond. Check Wi-Fi and try again."
+        return raw
+    }
+
     // Hardware buttons. Centre steps back, the outer two page the card.
     // Focus lives here rather than on any screen: the overlays use a
     // hand-rolled keyboard, not TextInput, so nothing else competes for it.
@@ -642,11 +655,45 @@ Window {
             anchors.fill: parent
             visible: anki.currentState === "DECKS"
 
+            // Why a sync failed, in the words the server used.
+            //
+            // lastError drove nothing but the button label reading "Sync
+            // failed". AnkiWeb had already said what was wrong -- an email
+            // address needing reconfirmation, in a sentence naming the
+            // account and the site to visit -- and the app put that in a log
+            // file on the tablet, where it is of use to nobody holding it.
+            Rectangle {
+                id: syncBanner
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                // Collapses completely when there is nothing to say, rather
+                // than leaving a margin's worth of gap above the deck list.
+                anchors.margins: visible ? 40 : 0
+                height: visible ? bannerText.height + 48 : 0
+                visible: sync.lastError !== ""
+                color: "white"
+                border.color: "black"
+                border.width: 2
+                radius: 16
+
+                Text {
+                    id: bannerText
+                    anchors.centerIn: parent
+                    width: parent.width - 56
+                    text: readableError(sync.lastError)
+                    wrapMode: Text.WordWrap
+                    font.family: brandFont
+                    font.pixelSize: 38
+                    color: "black"
+                }
+            }
+
             Item {
                 id: listHeader
                 width: parent.width
                 height: 110
-                anchors.top: parent.top
+                anchors.top: syncBanner.bottom
 
                 Text {
                     anchors.left: parent.left
