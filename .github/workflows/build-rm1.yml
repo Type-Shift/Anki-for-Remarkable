@@ -78,6 +78,18 @@ jobs:
           export PROTOC="$(command -v protoc)"
           export PKG_CONFIG_ALLOW_CROSS=1
 
+          # Where rslib keeps its compiled protobuf descriptor set. anki_proto's
+          # build script writes it and anki's build script reads it, and with
+          # nothing set they each work it out as OUT_DIR/../.. -- which was the
+          # shared build directory under the old cargo layout and is a
+          # PER-CRATE directory under the current one (build/<pkg>/<hash>/out).
+          # So the writer and the reader stopped agreeing, and anki's build
+          # script failed with a bare "No such file or directory". Both sides
+          # prefer this variable, so naming it once makes them agree whatever
+          # cargo does with its directories.
+          mkdir -p "${GITHUB_WORKSPACE}/device/ankicore/target"
+          export DESCRIPTORS_BIN="${GITHUB_WORKSPACE}/device/ankicore/target/anki_descriptors.bin"
+
           cd device/ankicore
           cargo build --release --target "$RUST_TARGET"
           ls -la "target/${RUST_TARGET}/release/libankicore.a"
