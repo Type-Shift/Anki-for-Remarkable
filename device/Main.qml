@@ -27,6 +27,62 @@ Window {
     // requires stopping xochitl, which removes reMarkable's own settings UI.
     property bool wifiOpen: false
 
+    // --- Flashcards -------------------------------------------------------
+    //
+    // A deck of plain-text cards from /home/root/flashcards, worked through
+    // with the three hardware buttons and nothing else: no grading, no
+    // scheduling, nothing written back. All of its state is QML-local --
+    // anki.currentState knows nothing about it and the collection is never
+    // opened, so a session here cannot touch real review history.
+    property bool flashOpen: false
+    property var flashDecks: []        // deck names, from the device
+    property string flashDeck: ""      // "" while the deck picker is showing
+    property var flashQueue: []        // card 0 is the one on screen
+    property int flashLoaded: 0        // how many the deck started with
+    property bool flashBack: false     // showing the back of the current card
+
+    function flashShowDecks() {
+        flashDeck = ""
+        flashQueue = []
+        flashLoaded = 0
+        flashBack = false
+        flashDecks = device.flashcardDecks()
+    }
+
+    // Re-reads the file every time, so restarting a deck also picks up
+    // whatever the importer has written since it was last opened.
+    function flashOpenDeck(name) {
+        flashDeck = name
+        flashQueue = device.flashcardCards(name)
+        flashLoaded = flashQueue.length
+        flashBack = false
+        flashScroll.contentY = 0
+    }
+
+    function flashFlip() {
+        flashBack = !flashBack
+        flashScroll.contentY = 0
+    }
+
+    // keep true sends the card to the back of the queue, false drops it for
+    // the rest of this run. A new array either way: QML does not notice a
+    // "var" property's array being edited in place, only reassigned.
+    function flashAdvance(keep) {
+        if (flashQueue.length === 0) return
+        var rest = flashQueue.slice(1)
+        if (keep) rest.push(flashQueue[0])
+        flashQueue = rest
+        flashBack = false
+        flashScroll.contentY = 0
+    }
+
+    // Out one level at a time, so the card screen always has somewhere to go
+    // and the picker always has a way back to the deck list.
+    function flashClose() {
+        if (flashDeck !== "") flashShowDecks()
+        else                  flashOpen = false
+    }
+
     // Fonts - scaled for reMarkable high-DPI (1872x2404)
     property string defaultFont: "sans-serif"
 
@@ -74,6 +130,7 @@ Window {
         if (wifiOpen)             wifiOpen = false
         else if (syncLoginOpen)   syncLoginOpen = false
         else if (fullSyncAskOpen) fullSyncAskOpen = false
+        else if (flashOpen)       flashClose()
         else if (anki.currentState === "DECKS") anki.goHome()
         else if (anki.currentState === "STUDY" || anki.currentState === "DONE")
             anki.loadDecks()
@@ -123,6 +180,30 @@ Window {
                 else powerHoldTimer.restart()
                 event.accepted = true
                 return
+            }
+
+            // Flashcards claim all three front buttons, so this has to come
+            // before the Home branch below: Home flips the card here and must
+            // NOT also step back, or the centre button would both flip and
+            // leave. The way out is the touch "Back" in the flashcard header.
+            if (flashOpen && !wifiOpen && !syncLoginOpen && !fullSyncAskOpen) {
+                // Same inversion as the study screen: the panel is mounted
+                // upside down (rotate=180) and the key codes are not rotated,
+                // so KEY_LEFT arrives from the button on the user's RIGHT.
+                // Mapped by where the finger is, not by the key name.
+                if (event.key === Qt.Key_Home) {
+                    flashFlip()                 // centre: flip
+                    event.accepted = true
+                    return
+                } else if (event.key === Qt.Key_Right) {
+                    flashAdvance(true)          // user's left: see it later
+                    event.accepted = true
+                    return
+                } else if (event.key === Qt.Key_Left) {
+                    flashAdvance(false)         // user's right: done with it
+                    event.accepted = true
+                    return
+                }
             }
 
             if (event.key === Qt.Key_Home || event.key === Qt.Key_Escape
@@ -202,6 +283,27 @@ Window {
                 }
             }
 
+        }
+
+        // Flashcards: a second, scheduler-free deck format, reached from here
+        // because this is the page decks live on.
+        Text {
+            anchors.centerIn: parent
+            visible: anki.currentState === "DECKS"
+            text: "Flashcards"
+            font.family: brandFont
+            font.pixelSize: 48
+            font.weight: Font.Light
+            color: "black"
+
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -40
+                onClicked: {
+                    root.flashShowDecks()
+                    root.flashOpen = true
+                }
+            }
         }
 
         // Sync lives here rather than on the launcher: it acts on the decks
@@ -1113,6 +1215,315 @@ Window {
                         onClicked: {
                             root.wifiOpen = true
                             wifi.scan()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ==========================================
+    // Flashcards overlay
+    // ==========================================
+    //
+    // Three screens in one: pick a deck, work through its cards, done. Same
+    // idiom as the Wi-Fi panel -- opaque white, hairline rules, wide margins,
+    // a touch control top right to leave by.
+    Item {
+        id: flashOverlay
+        anchors.fill: parent
+        visible: root.flashOpen
+        // Above the header (50) and the views, below the login sheet (100),
+        // the full-sync question (150), Wi-Fi (200) and the power screen.
+        z: 90
+
+        readonly property int sideMargin: 150
+        readonly property var card: root.flashQueue.length > 0 ? root.flashQueue[0] : null
+
+        Rectangle { anchors.fill: parent; color: "white" }
+
+        // An opaque Rectangle hides what is behind but does not stop touches
+        // reaching it: without this, a tap on blank space here lands on the
+        // Anki deck row underneath and starts a real review session. Declared
+        // before the controls below, so it only ever gets what they miss.
+        MouseArea { anchors.fill: parent }
+
+        // --- Header ---------------------------------------------------
+        Item {
+            id: flashHeader
+            anchors.top: parent.top
+            anchors.topMargin: 60
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: flashOverlay.sideMargin
+            anchors.rightMargin: flashOverlay.sideMargin
+            height: 130
+
+            Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - 260
+                elide: Text.ElideRight
+                text: root.flashDeck === "" ? "Flashcards" : root.flashDeck
+                font.family: brandFont
+                font.pixelSize: 96
+                font.weight: Font.Light
+                color: "black"
+            }
+
+            // The only exit by hand, and the reason it has to exist: while
+            // this overlay is open the centre button flips the card instead
+            // of stepping back.
+            Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Back"
+                font.family: brandFont
+                font.pixelSize: 52
+                color: "black"
+
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -40
+                    onClicked: root.flashClose()
+                }
+            }
+        }
+
+        // --- Deck picker ----------------------------------------------
+        Item {
+            anchors.top: flashHeader.bottom
+            anchors.topMargin: 30
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: flashOverlay.sideMargin
+            anchors.rightMargin: flashOverlay.sideMargin
+            visible: root.flashDeck === ""
+
+            Text {
+                width: parent.width
+                visible: root.flashDecks.length === 0
+                text: "No decks here yet.\n\nPut tab-separated files in\n/home/root/flashcards/\nas front<tab>back, one card a line."
+                wrapMode: Text.WordWrap
+                font.family: brandFont
+                font.pixelSize: 44
+                font.weight: Font.Light
+                color: "#777777"
+                lineHeight: 1.3
+            }
+
+            Flickable {
+                anchors.fill: parent
+                contentHeight: flashDeckColumn.height
+                clip: true
+                visible: root.flashDecks.length > 0
+
+                // Same e-ink settings as the Anki deck list: content tracks
+                // the finger and stops dead, because momentum smears.
+                maximumFlickVelocity: 0
+                flickDeceleration: 100000
+                boundsBehavior: Flickable.StopAtBounds
+                pixelAligned: true
+
+                Column {
+                    id: flashDeckColumn
+                    width: parent.width
+
+                    Repeater {
+                        model: root.flashDecks
+
+                        delegate: Item {
+                            width: flashDeckColumn.width
+                            height: 130
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width
+                                elide: Text.ElideRight
+                                text: modelData
+                                font.family: brandFont
+                                font.pixelSize: normalFontSize
+                                font.weight: Font.Light
+                                color: "black"
+                            }
+
+                            Rectangle {
+                                anchors.bottom: parent.bottom
+                                width: parent.width
+                                height: 1
+                                color: "#DDDDDD"
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: root.flashOpenDeck(modelData)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- The card -------------------------------------------------
+        //
+        // No tap-to-flip. The study screen lost its full-screen tap target
+        // because stray digitiser events kept firing it; the centre button
+        // is the deliberate gesture here.
+        Item {
+            anchors.top: flashHeader.bottom
+            anchors.bottom: flashCount.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: flashOverlay.sideMargin
+            anchors.rightMargin: flashOverlay.sideMargin
+            visible: root.flashDeck !== "" && flashOverlay.card !== null
+
+            Flickable {
+                id: flashScroll
+                anchors.fill: parent
+                contentHeight: flashText.height + 80
+                clip: true
+
+                maximumFlickVelocity: 6000
+                flickDeceleration: 9000
+                boundsBehavior: Flickable.StopAtBounds
+                pixelAligned: true
+
+                Text {
+                    id: flashText
+                    width: flashScroll.width
+                    topPadding: 60
+                    text: flashOverlay.card === null ? ""
+                          : (root.flashBack ? flashOverlay.card.back
+                                            : flashOverlay.card.front)
+                    font.family: brandFont
+                    font.pixelSize: largeFontSize
+                    color: "black"
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    lineHeight: 1.2
+                }
+            }
+        }
+
+        // How many are left in this run, and which side is showing.
+        Text {
+            id: flashCount
+            anchors.bottom: flashHints.top
+            anchors.bottomMargin: 24
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.flashDeck !== "" && flashOverlay.card !== null
+            text: root.flashQueue.length + " left"
+                  + (root.flashBack ? "   -   back" : "")
+            font.family: brandFont
+            font.pixelSize: 36
+            font.weight: Font.Light
+            color: "#999999"
+        }
+
+        // --- Button hints ---------------------------------------------
+        //
+        // Laid out where the hardware is: each label sits above the button it
+        // describes, which is the only clue the tablet can give about what
+        // three unmarked buttons do.
+        Item {
+            id: flashHints
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 50
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: flashOverlay.sideMargin
+            anchors.rightMargin: flashOverlay.sideMargin
+            height: 60
+            visible: root.flashDeck !== "" && flashOverlay.card !== null
+
+            Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: "later"
+                font.family: brandFont
+                font.pixelSize: 40
+                font.weight: Font.Light
+                color: "#777777"
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: parent.verticalCenter
+                text: "flip"
+                font.family: brandFont
+                font.pixelSize: 40
+                font.weight: Font.Light
+                color: "#777777"
+            }
+
+            Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "done"
+                font.family: brandFont
+                font.pixelSize: 40
+                font.weight: Font.Light
+                color: "#777777"
+            }
+        }
+
+        // --- End of the deck ------------------------------------------
+        Item {
+            anchors.top: flashHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            visible: root.flashDeck !== "" && flashOverlay.card === null
+
+            Column {
+                anchors.centerIn: parent
+                spacing: 60
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: root.flashLoaded === 0 ? "Nothing in this deck"
+                                                 : "Deck finished"
+                    font.family: brandFont
+                    font.pixelSize: largeFontSize
+                    font.weight: Font.Light
+                    color: "black"
+                }
+
+                // Two ways on, both by touch: the hardware buttons do nothing
+                // on this screen, and one exit is how a screen becomes a trap.
+                Row {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: 50
+
+                    Repeater {
+                        model: [{ label: "Restart", restart: true },
+                                { label: "Decks",   restart: false }]
+
+                        delegate: Rectangle {
+                            width: 380
+                            height: 110
+                            radius: 24
+                            border.color: "black"
+                            border.width: 3
+                            color: "white"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                font.family: brandFont
+                                font.pixelSize: normalFontSize
+                                color: "black"
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: modelData.restart
+                                           ? root.flashOpenDeck(root.flashDeck)
+                                           : root.flashShowDecks()
+                            }
                         }
                     }
                 }

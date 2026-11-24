@@ -4,6 +4,8 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QString>
+#include <QStringList>
+#include <QVariantList>
 
 // ---------------------------------------------------------------------------
 // DeviceActions
@@ -41,6 +43,23 @@ public:
     Q_INVOKABLE void suspendDevice();
     // Power off completely. The only state that draws no battery at all.
     Q_INVOKABLE void powerOffDevice();
+
+    // --- Flashcards --------------------------------------------------------
+    //
+    // Plain-text decks in /home/root/flashcards, written by a PC-side
+    // importer: UTF-8, one card per line as front<TAB>back, blank and
+    // "#" lines ignored, a literal "\n" in a field meaning a line break.
+    // Nothing here touches collection.anki2.
+    //
+    // They live on DeviceActions rather than in QML because QML can neither
+    // create a directory nor enumerate one without Qt.labs.folderlistmodel,
+    // which this firmware's Qt is not known to ship -- and a missing import
+    // fails the whole of Main.qml, not just one screen.
+
+    /// Deck names (file stems, sorted). Creates the directory if absent.
+    Q_INVOKABLE QStringList flashcardDecks();
+    /// The deck's cards in file order, as { front, back } maps.
+    Q_INVOKABLE QVariantList flashcardCards(const QString &deck);
 
     // Any input anywhere counts as activity; watching qApp avoids having to
     // thread a "wake up" call through every screen in the QML.

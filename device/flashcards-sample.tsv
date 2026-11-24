@@ -1,0 +1,18 @@
+# Sample deck -- also the flashcard parser's fixture.
+#
+# Format, fixed by agreement with the PC-side importer:
+#   UTF-8, one card a line, front<TAB>back
+#   blank lines and lines starting with # are ignored
+#   a literal \n inside a field is a line break when rendered
+#
+# This file holds exactly 6 cards. Every line below exercises one rule,
+# so if the tablet counts anything other than 6 the parser is wrong.
+
+Capital of France	Paris
+Two lines on the back	first line\n second line
+Accents survive	naïve café résumé
+Tabs in the back	only the first tab splits	this is still the back
+A long card, to prove it scrolls	One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten. Eleven. Twelve. Thirteen. Fourteen. Fifteen. Sixteen. Seventeen. Eighteen. Nineteen. Twenty. Twenty-one. Twenty-two. Twenty-three. Twenty-four. Twenty-five. Twenty-six. Twenty-seven. Twenty-eight.
+
+this line has no tab, so it is not a card and must be skipped
+Last card	the file ends with a blank line after this

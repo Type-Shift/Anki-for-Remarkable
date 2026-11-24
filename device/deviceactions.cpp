@@ -172,3 +172,81 @@ void DeviceActions::rebootDevice()
 {
     QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("reboot")});
 }
+
+// ---------------------------------------------------------------------------
+// Flashcards
+//
+// Fixed by agreement with the PC-side importer that writes these files; see
+// the header for the format.
+// ---------------------------------------------------------------------------
+
+namespace {
+QString flashcardDir() { return QStringLiteral("/home/root/flashcards"); }
+
+// A literal two-character "\n" in a field means a line break when rendered.
+QString unescapeField(QString s)
+{
+    return s.replace(QLatin1String("\\n"), QLatin1String("\n"));
+}
+}
+
+QStringList DeviceActions::flashcardDecks()
+{
+    QDir dir(flashcardDir());
+    if (!dir.exists() && !dir.mkpath(QStringLiteral(".")))
+        qWarning() << "flashcards: cannot create" << flashcardDir();
+
+    QStringList names;
+    // entryList on a directory that does not exist returns nothing rather
+    // than failing, so an unwritable device still shows an empty list.
+    const QStringList files = dir.entryList({QStringLiteral("*.tsv")},
+                                            QDir::Files | QDir::Readable,
+                                            QDir::Name);
+    for (const QString &f : files)
+        names << f.chopped(4);          // the deck name is the file stem
+    return names;
+}
+
+QVariantList DeviceActions::flashcardCards(const QString &deck)
+{
+    QVariantList cards;
+
+    // The name comes from flashcardDecks(), but it arrives back as a string
+    // from QML: refuse anything that could read outside the deck directory.
+    if (deck.isEmpty() || deck.contains(QLatin1Char('/'))
+        || deck.contains(QLatin1Char('\\')) || deck.contains(QLatin1String(".."))) {
+        qWarning() << "flashcards: rejected deck name" << deck;
+        return cards;
+    }
+
+    QFile f(flashcardDir() + QStringLiteral("/") + deck + QStringLiteral(".tsv"));
+    if (!f.open(QIODevice::ReadOnly)) {
+        qWarning() << "flashcards: cannot read" << f.fileName();
+        return cards;
+    }
+
+    const QStringList lines =
+        QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();   // also drops a CRLF return
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+
+        // Both sides are required. Only the FIRST tab separates, so a back
+        // field may contain tabs of its own.
+        const int tab = line.indexOf(QLatin1Char('\t'));
+        if (tab < 0) {
+            qWarning() << "flashcards:" << deck << "- skipping line with no tab";
+            continue;
+        }
+
+        QVariantMap card;
+        card[QStringLiteral("front")] = unescapeField(line.left(tab));
+        card[QStringLiteral("back")]  = unescapeField(line.mid(tab + 1).trimmed());
+        cards << card;
+    }
+
+    qInfo() << "flashcards:" << deck << "-" << cards.size() << "cards";
+    return cards;
+}
