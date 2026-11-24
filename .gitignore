@@ -6,3 +6,4 @@ batch.json
 queue.json
 __pycache__/
 *.pyc
+decks/
