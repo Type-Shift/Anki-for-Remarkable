@@ -265,7 +265,9 @@ _SAMPLE = '''<!DOCTYPE html><html><head>
 
 def selftest() -> int:
     title, cards = parse_page(_SAMPLE)
-    assert title == "Le Petit Dejeuner" or title == "Le Petit Déjeuner", title
+    # the raw title keeps its accents; only the filename folds them
+    assert title == "Le Petit Déjeuner", title
+    assert safe_deck_name(title) == "Le_Petit_Dejeuner"
     assert len(cards) == 3, cards
     assert ("le pain", "bread") in cards, cards
 

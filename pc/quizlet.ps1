@@ -45,33 +45,44 @@ if ($From -and -not $Title) { Fail '-From needs -Title (the deck name)' }
 
 New-Item -ItemType Directory -Force -Path $DeckDir | Out-Null
 
+# Not $args: that is an automatic variable and splatting it would send the
+# script's own leftover arguments to python.
 if ($Url) {
-    $args = @('fetch', '--url', $Url, '--out-dir', $DeckDir)
-    if ($Title) { $args += @('--title', $Title) }
+    $pyArgs = @('fetch', '--url', $Url, '--out-dir', $DeckDir)
+    if ($Title) { $pyArgs += @('--title', $Title) }
 }
 else {
     if (-not (Test-Path $From)) { Fail "no such file: $From" }
-    $args = @('paste', '--title', $Title, '--in', (Resolve-Path $From).Path,
-              '--out-dir', $DeckDir)
+    $pyArgs = @('paste', '--title', $Title, '--in', (Resolve-Path $From).Path,
+                '--out-dir', $DeckDir)
 }
 
 # -I keeps the interpreter from importing anything out of the working
 # directory; this script only ever runs stdlib.
-$before = Get-ChildItem -Path $DeckDir -Filter *.tsv -ErrorAction SilentlyContinue |
-          Select-Object -ExpandProperty FullName
-& python -I $Py @args
-if ($LASTEXITCODE -ne 0) { Fail 'could not build the deck file' }
+$out = & python -I $Py @pyArgs
+if ($LASTEXITCODE -ne 0) {
+    $out | ForEach-Object { Write-Host $_ }
+    Fail 'could not build the deck file'
+}
 
-# quizlet2rm.py derives the filename from the set title, so find what it wrote.
-$deck = Get-ChildItem -Path $DeckDir -Filter *.tsv |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $deck) { Fail 'no deck file was produced' }
+# quizlet2rm.py derives the filename from the set title and prints the path it
+# wrote, so take that rather than guessing at the newest file in the folder.
+$deckPath = ($out | Select-String -Pattern '-> (.+\.tsv)$' |
+             Select-Object -First 1).Matches.Groups[1].Value
+if (-not $deckPath -or -not (Test-Path -LiteralPath $deckPath)) {
+    $out | ForEach-Object { Write-Host $_ }
+    Fail 'no deck file was produced'
+}
+$deck = Get-Item -LiteralPath $deckPath
 
 Write-Host ''
 Write-Host "deck: $($deck.FullName)" -ForegroundColor Cyan
-Get-Content -LiteralPath $deck.FullName -TotalCount 8 |
+# -Encoding UTF8 or PS 5.1 reads this BOM-less UTF-8 as ANSI and the preview
+# shows mojibake for every accent, which looks like a corrupt deck.
+Get-Content -LiteralPath $deck.FullName -TotalCount 8 -Encoding UTF8 |
     ForEach-Object { "    $($_ -replace "`t", '  |  ')" }
-$cards = (Get-Content -LiteralPath $deck.FullName | Measure-Object -Line).Lines
+$cards = (Get-Content -LiteralPath $deck.FullName -Encoding UTF8 |
+          Measure-Object -Line).Lines
 Write-Host "    ($cards cards)"
 
 if ($NoPush) { Write-Host 'left on the PC (-NoPush)'; exit 0 }
