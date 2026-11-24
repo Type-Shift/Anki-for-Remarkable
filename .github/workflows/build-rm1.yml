@@ -79,22 +79,6 @@ jobs:
           export PKG_CONFIG_ALLOW_CROSS=1
 
           cd device/ankicore
-
-          # There is no Cargo.lock in the tree, so every run resolves the
-          # newest compatible version of every transitive dependency -- and
-          # one of them rotted. systemstat 0.2.8 (published 2026-11-15) put a
-          # RefCell in its Linux PlatformImpl, which makes burn-train's
-          # CpuTemperature metric no longer Sync, which fails the
-          # "Metric: Send + Sync" bound and stops rslib's dependency tree
-          # compiling. Nothing on this device reads a CPU temperature.
-          #
-          # ponytail: pins the one crate that broke. The real ceiling is the
-          # missing lock file -- the next unpinned dependency can rot the
-          # same way. Upgrade path: commit the Cargo.lock this step generates
-          # (upload it as an artifact from a green run) and build --locked.
-          cargo generate-lockfile
-          cargo update -p systemstat --precise 0.2.7
-
           cargo build --release --target "$RUST_TARGET"
           ls -la "target/${RUST_TARGET}/release/libankicore.a"
 
