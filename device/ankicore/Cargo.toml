@@ -36,6 +36,22 @@ tokio = { version = "1", features = [
     "io-util", "rt-multi-thread", "macros", "sync", "time", "net", "fs",
 ] }
 
+# Not used directly either, and pinned to the exact version on purpose.
+# rslib pulls in fsrs, fsrs pulls in burn-train, and burn-train's optional
+# CPU-temperature metric reads systemstat. systemstat 0.2.8 (2026-11-15) put
+# a RefCell in its Linux PlatformImpl, so that metric stopped being Sync and
+# failed burn-train's "Metric: Send + Sync" bound -- which broke every build
+# of this crate four days later, on code nobody here wrote.
+#
+# Nothing on this device reads a CPU temperature; naming the last working
+# version here holds the whole tree at it.
+#
+# ponytail: a one-crate pin. The ceiling is that there is no Cargo.lock in
+# the tree, so every CI run still resolves everything else afresh and the
+# next crate can rot the same way. Upgrade path: take the Cargo.lock from a
+# green run, commit it, and build with --locked.
+systemstat = "=0.2.7"
+
 # rslib's sync entry points take a reqwest::Client, and it must be the SAME
 # reqwest rslib vendors or the types will not match. The build log shows it
 # resolving 0.12.28, so naming the same major line lets Cargo unify them.
