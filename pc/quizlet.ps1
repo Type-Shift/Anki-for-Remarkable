@@ -138,9 +138,9 @@ Invoke-RmRetry -What 'scp' -Action {
 
 # BusyBox: -n on head/tail, no getent, so keep remote commands plain.
 $listing = Invoke-RmRetry -What 'verify' -Action {
-    $out = & ssh @sshOpts "root@$Device" "ls -l $RemoteDir/$name; wc -l < $RemoteDir/$name"
+    $txt = & ssh @sshOpts "root@$Device" "ls -l $RemoteDir/$name; wc -l < $RemoteDir/$name"
     if ($LASTEXITCODE -ne 0) { throw "ssh exit $LASTEXITCODE" }
-    return $out
+    return $txt
 }
 
 Write-Host ''

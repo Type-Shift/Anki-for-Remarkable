@@ -87,6 +87,9 @@ def safe_deck_name(title: str) -> str:
     ascii_only = folded.encode("ascii", "ignore").decode("ascii")
     name = _NAME_OK_RE.sub("_", ascii_only)
     name = re.sub(r"_+", "_", name)
+    # The on-device reader refuses any deck name containing "..", so a title
+    # like "Chapter 1..3" would land as a file the app silently skips.
+    name = re.sub(r"\.{2,}", ".", name)
     # A leading dash would be read as an option by scp/ssh; a leading dot
     # hides the file. Strip both ends of anything that is not alphanumeric.
     name = name.strip("._-")
@@ -299,6 +302,9 @@ def selftest() -> int:
     assert safe_deck_name("a/b\\c:d") == "a_b_c_d"
     assert safe_deck_name('x"; rm -rf /; echo "y') == "x_rm_-rf_echo_y"
     assert safe_deck_name("  ...dots...  ") == "dots"
+    # the device reader rejects ".." anywhere in a deck name
+    assert safe_deck_name("Chapter 1..3") == "Chapter_1.3"
+    assert ".." not in safe_deck_name("a....b..c")
     # no name may ever carry a space or a shell/scp metacharacter
     for probe in ("a b", "x;y", "p|q", "$HOME", "`id`", "a\tb", "..", "/", "-x"):
         try:
